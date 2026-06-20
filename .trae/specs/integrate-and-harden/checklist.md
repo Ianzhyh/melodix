@@ -1,0 +1,7 @@
+- [x] AudioEngine ended 事件在 next() 后重新获取 state，正确自动播放下一首
+- [x] 队列末尾播放结束时 isPlaying 设为 false
+- [x] challenger-m2.test.ts 的 ended 事件测试通过（fetchMock 被调用，isPlaying 为 true）
+- [x] 前端 qrcDecoder 与 e2e 解码器对 qrcFixture 输出一致
+- [x] 全部 E2E 测试通过（0 失败）
+- [x] TypeScript 编译无错误
+- [x] npm run tauri build 成功生成可执行文件（melodix.exe）

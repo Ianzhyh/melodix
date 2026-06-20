@@ -1,0 +1,111 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./glass.css";
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background-color: transparent !important;
+  color: var(--color-text);
+  font-family: var(--font-main);
+  overflow: hidden;
+  user-select: none;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* Custom range input styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  height: 20px;
+  --track-height: 4px;
+}
+
+input[type="range"]:hover {
+  --track-height: 6px;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: var(--track-height);
+  background: linear-gradient(to right, var(--theme-color, var(--color-primary)) var(--progress, 0%), rgba(255,255,255,0.2) var(--progress, 0%));
+  border-radius: 999px;
+  margin-top: calc((20px - var(--track-height)) / 2);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0;
+  height: 0;
+}
+
+input[type="range"]::-moz-range-track {
+  height: var(--track-height);
+  background: linear-gradient(to right, var(--theme-color, var(--color-primary)) var(--progress, 0%), rgba(255,255,255,0.2) var(--progress, 0%));
+  border-radius: 999px;
+  margin-top: calc((20px - var(--track-height)) / 2);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 0;
+  height: 0;
+  border: none;
+}
+
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-hover);
+}
+
+/* Button reset */
+button {
+  font-family: inherit;
+}
+
+/* Shimmer skeleton animation */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.shimmer-skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.03) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+body[data-theme="light"] .shimmer-skeleton {
+  background: linear-gradient(90deg, rgba(15,23,42,0.03) 25%, rgba(15,23,42,0.08) 50%, rgba(15,23,42,0.03) 75%);
+  background-size: 200% 100%;
+}

@@ -1,0 +1,73 @@
+.lyrics-scroll-container::-webkit-scrollbar { display: none; }
+.lyric-line-el {
+  padding: 8px 0;
+  margin-bottom: 8px;
+  cursor: pointer;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 75%; /* Ensure scaled up active line does not overflow */
+  color: var(--color-text-faint);
+  transform: scale(1);
+  transition:
+    transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),
+    filter 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform, opacity, filter;
+  transform-origin: left center;
+}
+.lyric-char {
+  display: inline;
+  --char-pct: 0%;
+  background-image: linear-gradient(
+    to right,
+    var(--color-text) var(--char-pct),
+    var(--color-text-faint) var(--char-pct)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+/* 当前行高亮 */
+.lyric-line-active {
+  font-weight: 800 !important;
+  opacity: 1 !important;
+  filter: blur(0px) !important;
+  transform: scale(1.3) !important;
+  transform-origin: left center;
+  letter-spacing: -0.03em;
+}
+.lyric-line-active .lyric-char {
+  background-image: linear-gradient(
+    to right,
+    var(--color-text) var(--char-pct),
+    var(--color-text-faint) var(--char-pct)
+  );
+}
+/* 已唱行：文字全白，按距离轻微淡出 */
+.lyric-line-sung .lyric-char {
+  background-image: none !important;
+  -webkit-text-fill-color: var(--color-text-dim) !important;
+}
+.lyric-line-sung-dist-1 { opacity: 0.85; transform: scale(0.97); }
+.lyric-line-sung-dist-2 { opacity: 0.7; transform: scale(0.94); }
+.lyric-line-sung-dist-3 { opacity: 0.55; transform: scale(0.91); }
+.lyric-line-sung-dist-4 { opacity: 0.4; transform: scale(0.88); }
+.lyric-line-sung-dist-5 { opacity: 0.28; transform: scale(0.85); }
+/* 未唱行：按距离递减 */
+[class*="lyric-line-ahead"] .lyric-char {
+  background-image: none !important;
+  -webkit-text-fill-color: var(--color-text-faint) !important;
+}
+.lyric-line-ahead-1 { opacity: 0.8; transform: scale(0.98); }
+.lyric-line-ahead-2 { opacity: 0.6; transform: scale(0.95); }
+.lyric-line-ahead-3 { opacity: 0.45; transform: scale(0.92); }
+.lyric-line-ahead-4 { opacity: 0.3; transform: scale(0.89); }
+.lyric-line-ahead-5 { opacity: 0.18; transform: scale(0.86); }
+@media (max-width: 640px) {
+  .lyric-line-el {
+    font-size: 16px !important;
+  }
+}

@@ -1,0 +1,68 @@
+# 依赖目录
+node_modules/
+target/
+
+# 构建产物
+dist/
+build/
+
+# 敏感凭证文件
+cookies.json
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+
+# 日志文件
+*.log
+logs/
+
+# 临时和调试文件
+recovered.tsx
+recovered_file.tsx
+part1.tsx
+part2.tsx
+test.txt
+test2.txt
+grep_output.txt
+qr_test*.png
+qrcode_test.png
+test_qr.png
+test_qr_login.cjs
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE 配置（保留 .trae 目录）
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境配置
+.env.local
+.env.production
+
+# QQ 登录调试输出（含真实凭证，严禁提交）
+qr_now.txt
+qq_check_*.txt
+qr_test*.png
+
+# sidecar 二进制与测试文件（体积大或含登录流程，不应提交）
+src-tauri/binaries/node.exe
+src-tauri/binaries/meting-api/test_*.cjs
+src-tauri/binaries/meting-api/test.js
+src-tauri/binaries/meting-api/encrypted_qrc.hex
+src-tauri/binaries/meting-api/scratch_*.js
+
+# 本地运行时数据（SQLite 数据库、下载内容、封面缓存）
+*.db
+*.db-journal
+downloads/
+covers/
+
+# Trae IDE 多 agent 协作过程文件
+.agents/

@@ -1,0 +1,132 @@
+:root {
+  --color-primary-default: #6366f1;
+  --color-primary:     #6366f1;
+  --color-primary-20:  rgba(99,102,241,0.2);
+  --color-primary-10:  rgba(99,102,241,0.1);
+
+  --color-success:     #10b981;
+  --color-danger:      #ef4444;
+  --color-favorite:    #ef4444;
+
+  --glass-1:           rgba(255,255,255,0.02);
+  --glass-2:           rgba(255,255,255,0.05);
+  --glass-3:           rgba(255,255,255,0.08);
+
+  /* 统一玻璃面板参数 */
+  --glass-bg: rgba(15, 18, 35, 0.2);
+  --glass-blur: blur(80px);
+  --glass-saturate: saturate(1.6);
+  --glass-border: rgba(255, 255, 255, 0.08);
+
+  --blur-sm:           blur(8px);
+  --blur-md:           blur(20px);
+  --blur-lg:           blur(40px);
+
+  --radius-xs:         4px;
+  --radius-sm:         8px;
+  --radius-md:         12px;
+  --radius-lg:         16px;
+  --radius-xl:         24px;
+  --radius-full:       9999px;
+
+  --spacing-xxs:       4px;
+  --spacing-xs:        8px;
+  --spacing-sm:        12px;
+  --spacing-md:        16px;
+  --spacing-lg:        24px;
+  --spacing-xl:        32px;
+  --spacing-xxl:       48px;
+
+  --player-bar-height: 88px;
+  --sidebar-width:     220px;
+  --titlebar-height:   32px;
+
+  --color-bg:          #050505;
+  --color-bg-elevated: #0a0a0b;
+  --color-player-bg:   rgba(5, 5, 5, 0.45);
+  --color-text:        rgba(255,255,255,0.95);
+  --color-text-dim:    rgba(255,255,255,0.65);
+  --color-text-faint:  rgba(255,255,255,0.45);
+  --color-text-inverse: #000000;
+  --color-border:      rgba(255,255,255,0.04);
+  --color-hover:       rgba(255,255,255,0.03);
+
+  /* 补充缺失的颜色 token */
+  --color-bg-alt: #0f0f14;          /* 启动屏背景 */
+  --color-bg-card: #161a26;         /* 卡片背景 */
+  --color-bg-placeholder: #1e293b;  /* 占位背景 */
+  --color-primary-light: #818cf8;   /* 主色浅色变体 */
+  --color-accent: #ec4899;          /* 强调色（粉） */
+  --color-success-bright: #4ade80;  /* 明亮成功色 */
+  --color-danger-light: #f87171;    /* 浅色错误 */
+  --color-img-placeholder: #333333; /* 图片占位背景 */
+
+  /* 语义化图标/表面 token（深色模式） */
+  --color-icon:           rgba(255,255,255,0.7);
+  --color-icon-active:    rgba(255,255,255,0.9);
+  --color-icon-disabled:  rgba(255,255,255,0.3);
+  --color-surface-hover:  rgba(255,255,255,0.06);
+  --color-surface-active: rgba(255,255,255,0.1);
+
+  /* 深色背景区域文字 token（两种模式都为白色） */
+  --color-text-on-dark:        rgba(255,255,255,0.95);
+  --color-text-on-dark-dim:    rgba(255,255,255,0.65);
+  --color-text-on-dark-faint:  rgba(255,255,255,0.4);
+  --color-border-on-dark:      rgba(255,255,255,0.1);
+
+  /* 全局控件 token */
+  --color-scrollbar:      rgba(255,255,255,0.15);
+  --color-scrollbar-hover:rgba(255,255,255,0.25);
+  --color-range-track:    rgba(255,255,255,0.15);
+  --color-range-thumb:    #ffffff;
+
+  --font-main: 'Inter Variable', 'Microsoft YaHei', sans-serif;
+
+  /* z-index 分层体系 */
+  --z-base: 0;
+  --z-content: 1;
+  --z-decoration: 2;
+  --z-sidebar: 10;
+  --z-playerbar: 50;
+  --z-titlebar: 60;
+  --z-overlay: 90;
+  --z-modal: 100;
+  --z-toast: 120;
+}
+
+body[data-theme="light"] {
+  --color-bg:              #f8fafc;
+  --color-bg-elevated:     #ffffff;
+  --color-bg-card:         rgba(255, 255, 255, 0.65);
+  --color-player-bg:       rgba(255, 255, 255, 0.75);
+  --color-text:            rgba(15, 23, 42, 0.95);
+  --color-text-dim:        rgba(15, 23, 42, 0.65);
+  --color-text-faint:      rgba(15, 23, 42, 0.45);
+  --color-text-inverse:    #ffffff;
+  --color-border:          rgba(15, 23, 42, 0.08);
+  --color-hover:           rgba(15, 23, 42, 0.04);
+  --glass-1:               rgba(0, 0, 0, 0.02);
+  --glass-2:               rgba(0, 0, 0, 0.04);
+  --glass-3:               rgba(0, 0, 0, 0.06);
+  --glass-border:          rgba(0, 0, 0, 0.05);
+  --glass-bg:              rgba(255, 255, 255, 0.55);
+
+  /* 语义化图标/表面 token（浅色模式） */
+  --color-icon:           rgba(15,23,42,0.7);
+  --color-icon-active:    rgba(15,23,42,0.9);
+  --color-icon-disabled:  rgba(15,23,42,0.3);
+  --color-surface-hover:  rgba(15,23,42,0.06);
+  --color-surface-active: rgba(15,23,42,0.1);
+
+  /* 深色背景区域文字 token（浅色模式也保持白色） */
+  --color-text-on-dark:        rgba(255,255,255,0.95);
+  --color-text-on-dark-dim:    rgba(255,255,255,0.65);
+  --color-text-on-dark-faint:  rgba(255,255,255,0.4);
+  --color-border-on-dark:      rgba(255,255,255,0.1);
+
+  /* 全局控件 token（浅色模式） */
+  --color-scrollbar:      rgba(15,23,42,0.15);
+  --color-scrollbar-hover:rgba(15,23,42,0.25);
+  --color-range-track:    rgba(15,23,42,0.15);
+  --color-range-thumb:    #1e293b;
+}

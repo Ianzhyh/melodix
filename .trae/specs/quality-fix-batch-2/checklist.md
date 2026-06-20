@@ -1,0 +1,19 @@
+- [x] AudioEngine play() 使用完整 URL 比较，不使用 endsWith
+- [x] AudioEngine ended handler 有竞态保护（songId 校验）
+- [x] AudioEngine ended handler 使用静态 import 而非动态 import
+- [x] LyricsView 无歌词时 RAF 循环已停止
+- [x] PlaylistView loadPage 使用 useCallback 包裹
+- [x] server.js 移除了手动 decodeURIComponent
+- [x] 搜索含 % 字符的内容不再报错
+- [x] PlayerBar 所有主色 fallback 值为 #6366f1
+- [x] server.js serveStatic 校验路径在 STATIC_ROOT 内
+- [x] server.js /proxy-image 校验域名白名单
+- [x] main.rs download_file 校验路径在下载目录内
+- [x] client.ts 有统一的 normalizeSong 函数
+- [x] AudioEngine store 订阅只包含 volume 和 isMuted
+- [x] FavoritesPage 和 PlaylistView CSS 类名有不同前缀
+- [x] API 请求有 10 秒超时
+- [x] Sidecar 等待期间有加载 UI
+- [x] TypeScript 编译 0 错误
+- [x] Vite 构建成功
+- [x] Tauri 打包成功

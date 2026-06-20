@@ -1,0 +1,18 @@
+- [ ] 凭证文件已删除（sidecar.log、qr_now.txt、qq_check_*.txt 不存在）
+- [ ] .gitignore 完整（含 .agents/、node.exe、*.db、qr_now.txt、qq_check_*.txt、downloads/、covers/）
+- [ ] server.js 监听 127.0.0.1
+- [ ] proxy.js 无硬编码 IP
+- [ ] capabilities/default.json 无 shell:allow-execute
+- [ ] 全局搜索无硬编码凭证（uin=、refresh_token、musickey、gho_ 等）
+- [ ] LICENSE 文件存在且为 CC BY-NC 4.0
+- [ ] README.md 存在，包含简介、功能特性、下载、开发指南、技术栈、许可证
+- [ ] 关于页面 4 个跳转链接指向真实仓库地址 https://github.com/Ianzhyh/melodix
+- [ ] 检查更新按钮点击后真实调用 GitHub Releases API 并对比版本
+- [ ] 检查更新三种场景正确：有更新/已最新/检查失败
+- [ ] cargo check 通过
+- [ ] tsc 无新增错误
+- [ ] git 仓库已初始化并首次提交
+- [ ] GitHub 仓库 Ianzhyh/melodix 已创建（public）并推送代码
+- [ ] tauri build 成功生成 msi 和 nsis exe 安装包
+- [ ] GitHub Release v0.1.0 已创建并附带安装包
+- [ ] 提交内容不含 node_modules、.agents、node.exe、*.db 等应忽略文件

@@ -1,0 +1,13 @@
+- [x] meting-api sidecar 替换完成，`/health` 返回 200
+- [x] 搜索 "unhappy" 能返回结果
+- [x] 搜索结果能获取播放 URL 并播放
+- [x] 歌词能获取（/lyric 接口）
+- [x] 封面能获取（/pic 接口）
+- [x] 前端所有 API 调用已适配新路由格式
+- [x] Cookie 通过请求头传递给 sidecar
+- [x] 侧边栏显示搜索和设置图标
+- [x] 设置页面能填写和保存 Cookie
+- [x] Cookie 持久化到 localStorage
+- [x] 保存 Cookie 同时调用 sidecar `/api/cookie` 接口
+- [x] TypeScript 编译 0 错误
+- [x] `npm run tauri dev` 能正常启动并播放歌曲

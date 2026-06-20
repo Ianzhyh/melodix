@@ -1,0 +1,11 @@
+.glass {
+  background: var(--glass-2);
+  backdrop-filter: var(--blur-md);
+  -webkit-backdrop-filter: var(--blur-md);
+  border: 0.5px solid var(--glass-border);
+}
+
+.glass-hover:hover {
+  background: var(--glass-3);
+  transition: background 0.15s ease;
+}

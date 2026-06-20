@@ -1,0 +1,22 @@
+{
+  "name": "meting-server",
+  "version": "1.1.0",
+  "description": "Meting Music API sidecar server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "esbuild server.js --bundle --platform=node --target=node18 --outfile=dist/index.js && pkg dist/index.js --targets node18-win-x64 --output ../src-tauri/binaries/meting-server-x86_64-pc-windows-msvc.exe"
+  },
+  "dependencies": {
+    "@meting/core": "^1.6.1",
+    "meting": "^2.0.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "pkg": "^5.8.1"
+  }
+}
