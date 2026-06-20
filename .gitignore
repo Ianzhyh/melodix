@@ -36,11 +36,15 @@ test_qr_login.cjs
 Thumbs.db
 desktop.ini
 
-# IDE 配置（保留 .trae 目录）
+# IDE 配置
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Trae IDE 内部文档（spec、计划等，不公开）
+.trae/
+docs/superpowers/
 
 # 环境配置
 .env.local

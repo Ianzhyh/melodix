@@ -1,4 +1,4 @@
-# Melodix
+﻿# Melodix
 
 Melodix 是一个基于 Tauri + React 的跨平台桌面音乐播放器，支持在线搜索播放、本地音乐管理、QRC 逐字歌词等功能。
 
