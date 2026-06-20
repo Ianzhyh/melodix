@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' https: asset: https://asset.localhost http://127.0.0.1:*; media-src 'self' https: block asset: https://asset.localhost http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:*",
+      "csp": "default-src 'self'; img-src 'self' https: asset: http://asset.localhost https://asset.localhost http://127.0.0.1:* data:; media-src 'self' https: http: asset: http://asset.localhost https://asset.localhost http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:*",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -41,7 +41,8 @@
       "binaries/node.exe",
       "binaries/meting-api/server.js",
       "binaries/meting-api/platforms/",
-      "binaries/meting-api/package.json"
+      "binaries/meting-api/package.json",
+      "binaries/meting-api/node_modules/"
     ]
   },
   "plugins": {
