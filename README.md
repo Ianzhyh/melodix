@@ -2,6 +2,14 @@
 
 Melodix 是一个基于 Tauri + React 的跨平台桌面音乐播放器，支持在线搜索播放、本地音乐管理、QRC 逐字歌词等功能。
 
+## 应用演示
+
+![演示一](docs/screenshots/screenshot-1.png)
+
+![演示二](docs/screenshots/screenshot-2.png)
+
+![演示三](docs/screenshots/screenshot-3.png)
+
 ## 功能特性
 
 - 在线音乐搜索与播放（QQ音乐、网易云音乐多源支持）
