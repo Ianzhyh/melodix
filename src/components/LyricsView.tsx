@@ -93,8 +93,6 @@ const LyricLineItem = memo(
 export function LyricsView() {
   const lyrics = usePlaybackStore((s) => s.lyrics)
   const activeLine = usePlaybackStore((s) => s.activeLine)
-  const currentTime = usePlaybackStore((s) => s.currentTime)
-  const setActiveLine = usePlaybackStore((s) => s.setActiveLine)
   const current = usePlaybackStore((s) => s.current)
   const isChineseLyric = usePlaybackStore((s) => s.isChineseLyric)
   const hasTranslation = usePlaybackStore((s) => s.hasTranslation)
@@ -114,7 +112,6 @@ export function LyricsView() {
   const charElsRef = useRef<Element[]>([])
   const lastPctRef = useRef<number[]>([])
   const rafRef = useRef<number>(0)
-  const prevActiveLineRef = useRef<number>(-1)
   const visibleRef = useRef(true)
   const prevLyricsRef = useRef(lyrics)
 
@@ -126,20 +123,17 @@ export function LyricsView() {
     lastPctRef.current = []
   }
 
-  // activeLine 同步：根据 currentTime 二分查找
+  // 组件卸载时彻底清空 DOM 引用，防止内存泄漏
   useEffect(() => {
-    if (lyrics.length === 0) return
-    let lo = 0, hi = lyrics.length - 1, result = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >>> 1
-      if (lyrics[mid].time <= currentTime) { result = mid; lo = mid + 1 }
-      else { hi = mid - 1 }
+    return () => {
+      lineRefs.current = []
+      charElsRef.current = []
+      lastPctRef.current = []
     }
-    if (result !== prevActiveLineRef.current) {
-      prevActiveLineRef.current = result
-      setActiveLine(result)
-    }
-  }, [currentTime, lyrics, setActiveLine])
+  }, [])
+
+  // activeLine 同步已迁移至 AudioEngine.ts 全局处理，即使 LyricsView 未挂载也能正确计算
+
 
   // 用于区分是正常切歌词还是切换翻译
   const scrollStateRef = useRef({ activeLine, showTranslation })

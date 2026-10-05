@@ -79,7 +79,7 @@ export const Icons = {
       <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
       <polyline points="7 23 3 19 7 15"></polyline>
       <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-      <text x="12" y="15" textAnchor="middle" fill="currentColor" stroke="none" fontSize="8" fontWeight="bold">1</text>
+      <path d="M10.4 11.9L12 10.4V15.2" fill="none" strokeWidth="1.6"></path>
     </svg>
   ),
   queue: (

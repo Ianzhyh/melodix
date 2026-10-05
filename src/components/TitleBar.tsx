@@ -25,6 +25,8 @@ export function TitleBar() {
     alignItems: 'center',
     justifyContent: 'center',
     transition: 'background 0.1s',
+    pointerEvents: 'auto',
+    outline: 'none',
   };
 
   return (
@@ -49,6 +51,19 @@ export function TitleBar() {
             display: flex !important;
           }
         }
+        /* 从标题栏拖拽热区中排除所有交互控件：否则轻微手抖会被判为"拖拽"，click 被吞 */
+        .titlebar-btn,
+        .hamburger-btn,
+        .titlebar-controls,
+        .titlebar-logo {
+          -webkit-app-region: no-drag;
+          app-region: no-drag;
+        }
+        .titlebar-btn,
+        .hamburger-btn,
+        .titlebar-controls {
+          pointer-events: auto;
+        }
       `}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <button
@@ -66,7 +81,8 @@ export function TitleBar() {
             display: 'none',
             alignItems: 'center',
             justifyContent: 'center',
-            outline: 'none'
+            outline: 'none',
+            pointerEvents: 'auto',
           }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -77,14 +93,16 @@ export function TitleBar() {
         </button>
         <span
           data-tauri-drag-region
+          className="titlebar-logo"
           style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text)', letterSpacing: 0.5 }}
         >
           Melodix
         </span>
       </div>
-      <div style={{ display: 'flex', height: '100%' }}>
+      <div className="titlebar-controls" style={{ display: 'flex', height: '100%' }}>
         {/* Minimize */}
         <button
+          className="titlebar-btn"
           style={btnStyle}
           onClick={() => getCurrentWindow().minimize()}
           onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-hover)'; }}
@@ -94,6 +112,7 @@ export function TitleBar() {
         </button>
         {/* Maximize / Restore */}
         <button
+          className="titlebar-btn"
           style={btnStyle}
           onClick={() => getCurrentWindow().toggleMaximize()}
           onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-hover)'; }}
@@ -111,6 +130,7 @@ export function TitleBar() {
         </button>
         {/* Close */}
         <button
+          className="titlebar-btn"
           style={btnStyle}
           onClick={() => getCurrentWindow().close()}
           onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--color-danger) 80%, transparent)'; }}

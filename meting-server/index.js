@@ -289,6 +289,11 @@ async function neteaseSearchFallback(keywords) {
   });
 }
 
+// Health check (local only, no external requests)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 // Handler
 app.get('/', async (req, res) => {
   const { server, type, id, keywords, size } = req.query;
@@ -360,6 +365,15 @@ app.get('/', async (req, res) => {
 const portArg = process.argv.find(arg => arg.startsWith('--port='));
 const port = portArg ? parseInt(portArg.split('=')[1], 10) : (parseInt(process.argv[2], 10) || 3000);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Meting server listening on port ${port}`);
+});
+
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[Server Error] 端口 ${port} 已被占用 (EADDRINUSE)，Meting 服务无法启动`);
+  } else {
+    console.error('[Server Error] Meting 服务启动失败:', (err && err.message) || err);
+  }
+  process.exit(1);
 });

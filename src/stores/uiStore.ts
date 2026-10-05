@@ -11,6 +11,10 @@ interface UIState {
   setToken: (t: string) => void;
   downloadPanelOpen: boolean;
   setDownloadPanelOpen: (open: boolean) => void;
+  libraryCreateOpen: boolean;
+  setLibraryCreateOpen: (open: boolean) => void;
+  isMiniPlayer: boolean;
+  toggleMiniPlayer: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -24,4 +28,9 @@ export const useUIStore = create<UIState>((set) => ({
   setToken: (t) => set({ token: t }),
   downloadPanelOpen: false,
   setDownloadPanelOpen: (open) => set({ downloadPanelOpen: open }),
+  // 自定义音乐库：侧边栏「新建音乐库」入口触发创建弹窗的标志（CustomLibraryPage 消费后复位）
+  libraryCreateOpen: false,
+  setLibraryCreateOpen: (open) => set({ libraryCreateOpen: open }),
+  isMiniPlayer: false,
+  toggleMiniPlayer: () => set((state) => ({ isMiniPlayer: !state.isMiniPlayer })),
 }));

@@ -14,6 +14,8 @@
         "title": "Melodix",
         "width": 1000,
         "height": 700,
+        "minWidth": 960,
+        "minHeight": 640,
         "resizable": true,
         "fullscreen": false,
         "transparent": true,
@@ -42,7 +44,9 @@
       "binaries/meting-api/server.js",
       "binaries/meting-api/platforms/",
       "binaries/meting-api/package.json",
-      "binaries/meting-api/node_modules/"
+      "binaries/meting-api/node_modules/",
+      "binaries/meting-api/qrc-decrypt.js",
+      "binaries/meting-api/lib/"
     ]
   },
   "plugins": {

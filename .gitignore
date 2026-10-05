@@ -58,6 +58,7 @@ qr_test*.png
 # sidecar 二进制与测试文件（体积大或含登录流程，不应提交）
 src-tauri/binaries/node.exe
 src-tauri/binaries/meting-api/test_*.cjs
+src-tauri/binaries/meting-api/test-*.cjs
 src-tauri/binaries/meting-api/test.js
 src-tauri/binaries/meting-api/encrypted_qrc.hex
 src-tauri/binaries/meting-api/scratch_*.js
@@ -70,3 +71,6 @@ covers/
 
 # Trae IDE 多 agent 协作过程文件
 .agents/
+
+# e2e 临时探针脚本（跑完删除的调试文件）
+e2e-tests/tmp-*.mjs

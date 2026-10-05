@@ -40,6 +40,9 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
         onMouseUp={onSeekEnd}
         onTouchStart={onSeekStart}
         onTouchEnd={onSeekEnd}
+        // 键盘（方向键）操作只触发 onChange/onKeyUp，不触发鼠标事件；
+        // 之前键盘拖动只改 seekValue 却从不提交 seek，导致键盘无法跳转
+        onKeyUp={onSeekEnd}
         disabled={!hasCurrent}
         className="player-seek-slider"
         style={{

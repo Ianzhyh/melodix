@@ -1,8 +1,32 @@
-import CryptoJS from 'crypto-js';
-import pako from 'pako';
 import { LyricLine } from '../types/playback';
 
 const KEY_STRING = '!@#)(*$%123ZXC!@!@#)(NHL';
+
+// LRU 缓存：以 input 为 key，缓存解密后的歌词。利用 Map 的插入顺序实现 LRU。
+const LRU_CACHE_MAX = 50;
+const qrcCache = new Map<string, LyricLine[]>();
+
+function getCached(key: string): LyricLine[] | undefined {
+  if (!qrcCache.has(key)) return undefined;
+  const value = qrcCache.get(key) as LyricLine[];
+  // 删除后重新插入，使其成为最新使用
+  qrcCache.delete(key);
+  qrcCache.set(key, value);
+  return value;
+}
+
+function setCached(key: string, value: LyricLine[]): void {
+  if (qrcCache.has(key)) {
+    qrcCache.delete(key);
+  } else if (qrcCache.size >= LRU_CACHE_MAX) {
+    // 淘汰最久未使用的（Map 的第一个元素）
+    const oldestKey = qrcCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      qrcCache.delete(oldestKey);
+    }
+  }
+  qrcCache.set(key, value);
+}
 
 function unescapeXml(str: string): string {
   return str.replace(/&(?:([a-zA-Z]+)|#(\d+)|#x([0-9a-fA-F]+));/g, (match, name, dec, hex) => {
@@ -78,10 +102,19 @@ function parseQrcXml(xml: string): LyricLine[] {
   return parsedLines;
 }
 
-export function decodeQRC(input: string): LyricLine[] {
+export async function decodeQRC(input: string): Promise<LyricLine[]> {
   if (!input) return [];
 
+  // 解密前先查缓存，命中则直接返回
+  const cached = getCached(input);
+  if (cached) return cached;
+
   try {
+    const [{ default: CryptoJS }, { default: pako }] = await Promise.all([
+      import('crypto-js'),
+      import('pako'),
+    ]);
+
     const key = CryptoJS.enc.Latin1.parse(KEY_STRING);
     const cipherParams = CryptoJS.lib.CipherParams.create({
       ciphertext: CryptoJS.enc.Base64.parse(input)
@@ -103,7 +136,10 @@ export function decodeQRC(input: string): LyricLine[] {
 
       const xml = pako.inflateRaw(u8, { to: 'string' });
       const parsed = parseQrcXml(xml);
-      if (parsed.length > 0) return parsed;
+      if (parsed.length > 0) {
+        setCached(input, parsed);
+        return parsed;
+      }
     }
   } catch {
     // Fallthrough to parse as plain LRC
@@ -120,16 +156,18 @@ export function decodeQRC(input: string): LyricLine[] {
 
     const min = parseInt(match[1], 10);
     const sec = parseInt(match[2], 10);
-    const ms = match[3] ? parseInt(match[3].padEnd(3, '0'), 10) : 0;
+    const ms = match[3] ? parseInt(match[3].slice(0, 3).padEnd(3, '0'), 10) : 0;
     const time = min * 60 + sec + ms / 1000;
     const text = match[4].trim();
 
-    parsedLines.push({ time, duration: 0, text, words: [], chars: [] });
+    parsedLines.push({ time, duration: 0, text, words: [] });
   }
 
   // Calculate generic durations
   for (let i = 0; i < parsedLines.length - 1; i++) {
     parsedLines[i].duration = parsedLines[i + 1].time - parsedLines[i].time;
   }
+
+  setCached(input, parsedLines);
   return parsedLines;
 }

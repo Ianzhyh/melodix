@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
+import { useConfigStore } from '../../stores/configStore';
 
 export interface Comment {
   avatar?: string;
@@ -15,17 +16,17 @@ function formatRelativeTime(timestamp: number): string {
   const now = Date.now();
   const diff = now - timestamp;
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return 'just now';
+  if (seconds < 60) return '刚刚';
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+  if (minutes < 60) return `${minutes} 分钟前`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+  if (hours < 24) return `${hours} 小时前`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days > 1 ? 's' : ''} ago`;
+  if (days < 30) return `${days} 天前`;
   const months = Math.floor(days / 30);
-  if (months < 12) return `${months} month${months > 1 ? 's' : ''} ago`;
+  if (months < 12) return `${months} 个月前`;
   const years = Math.floor(months / 12);
-  return `${years} year${years > 1 ? 's' : ''} ago`;
+  return `${years} 年前`;
 }
 
 interface CommentPanelProps {
@@ -36,37 +37,57 @@ interface CommentPanelProps {
 }
 
 export function CommentPanel({ show, onClose, comments, loading }: CommentPanelProps) {
+  const enableTransparency = useConfigStore((s) => s.enableTransparency);
+
   return (
     <AnimatePresence>
       {show && (
-        <motion.div
-          initial={{ x: 360, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: 360, opacity: 0 }}
-          transition={{ type: 'spring', stiffness: 280, damping: 28 }}
-          style={{
-            position: 'fixed', right: 0,
-            top: 'var(--titlebar-height, 40px)',
-            bottom: 'var(--player-bar-height, 88px)',
-            width: 360,
-            background: 'var(--glass-bg)',
-            backdropFilter: 'var(--glass-blur) var(--glass-saturate)',
-            WebkitBackdropFilter: 'var(--glass-blur) var(--glass-saturate)',
-            borderLeft: '1px solid var(--glass-border)',
-            zIndex: 'var(--z-overlay)' as any,
-            display: 'flex', flexDirection: 'column',
-            boxShadow: '-8px 0 40px rgba(0,0,0,0.15)',
-            borderTopLeftRadius: 16,
-            borderBottomLeftRadius: 16,
-          }}
-        >
+        <>
+          {/* 背景遮罩（规格对齐 DownloadPanel） */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            onClick={onClose}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.4)',
+              zIndex: 'var(--z-overlay)',
+            }}
+          />
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-label="评论"
+            initial={{ x: 360, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 360, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 280, damping: 28 }}
+            style={{
+              position: 'fixed', right: 0,
+              top: 'var(--titlebar-height, 40px)',
+              bottom: 'var(--player-bar-height, 88px)',
+              width: 360,
+              background: enableTransparency ? 'var(--acrylic-noise), var(--acrylic-tint)' : 'var(--color-bg-elevated)',
+              backdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
+              WebkitBackdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
+              borderLeft: '1px solid var(--glass-border)',
+              zIndex: 'var(--z-modal)',
+              display: 'flex', flexDirection: 'column',
+              boxShadow: '-8px 0 40px rgba(0,0,0,0.15)',
+              borderTopLeftRadius: 16,
+              borderBottomLeftRadius: 16,
+            }}
+          >
           {/* Header */}
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             padding: '20px 24px 14px', borderBottom: '1px solid var(--color-border)',
             flexShrink: 0,
           }}>
-            <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--color-text)', letterSpacing: 0.3 }}>Comments</span>
+            <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--color-text)', letterSpacing: 0.3 }}>评论</span>
             <motion.button
               whileHover={{ scale: 1.1, rotate: 90 }} whileTap={{ scale: 0.9 }}
               onClick={onClose}
@@ -95,7 +116,7 @@ export function CommentPanel({ show, onClose, comments, loading }: CommentPanelP
                 ))}
               </div>
             ) : comments.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: 40, color: 'var(--color-text-faint)', fontSize: 14 }}>No comments yet</div>
+              <div style={{ textAlign: 'center', padding: 40, color: 'var(--color-text-faint)', fontSize: 14 }}>暂无评论</div>
             ) : (
               comments.map((c, i) => (
                 <motion.div
@@ -114,7 +135,7 @@ export function CommentPanel({ show, onClose, comments, loading }: CommentPanelP
                     />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-dim)' }}>{c.nick || c.nickname || 'Anonymous'}</span>
+                        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-dim)' }}>{c.nick || c.nickname || '匿名用户'}</span>
                         <span style={{ fontSize: 11, color: 'var(--color-text-faint)' }}>
                           {c.time ? formatRelativeTime(typeof c.time === 'number' ? (c.time > 1e12 ? c.time : c.time * 1000) : Date.now()) : ''}
                         </span>
@@ -133,6 +154,7 @@ export function CommentPanel({ show, onClose, comments, loading }: CommentPanelP
             )}
           </div>
         </motion.div>
+        </>
       )}
     </AnimatePresence>
   );

@@ -13,7 +13,8 @@ function parseMsFragment(msStr: string): number {
   if (isNaN(n)) return 0;
   if (msStr.length === 1) return n * 100;
   if (msStr.length === 2) return n * 10;
-  return n;
+  // 长度超过 3 位时换算回毫秒，保持 3 位毫秒语义
+  return Math.round(n / Math.pow(10, msStr.length - 3));
 }
 
 /**
@@ -25,7 +26,9 @@ export function parseLrcTranslation(transLrc: string): Map<number, string> {
   if (!transLrc) return map;
 
   const lines = transLrc.split(/\r?\n/);
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    // 前导空格会让首个时间戳的 match.index != 0（cursor=0），导致整行被跳过，先去掉前导空白
+    const line = rawLine.trimStart();
     if (!line.trim()) continue;
 
     LRC_TIME_REGEX.lastIndex = 0;

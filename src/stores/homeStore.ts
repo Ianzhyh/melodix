@@ -7,6 +7,8 @@ interface ToplistItem {
   name: string;
   cover: string;
   songs: { name: string; artist: string }[];
+  /** 期数/更新说明（服务端返回，如 "第41期"） */
+  updateKey?: string;
   source: string;
 }
 
@@ -18,9 +20,24 @@ interface HomeState {
   loaded: boolean;
   lastFetchTime: number;
   fetchHomeData: () => Promise<void>;
+  /** 按需加载榜单完整歌曲列表（带 LRU 缓存），供快捷磁贴直接播放榜单 */
+  getToplistSongs: (id: string) => Promise<Song[]>;
 }
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 分钟缓存
+
+// 榜单完整歌曲列表的模块级 LRU 缓存（上限 5 个）
+const TOPLIST_SONGS_CACHE_MAX = 5;
+const toplistSongsCache = new Map<string, Song[]>();
+
+function getCachedToplistSongs(id: string): Song[] | undefined {
+  const songs = toplistSongsCache.get(id);
+  if (songs) {
+    toplistSongsCache.delete(id);
+    toplistSongsCache.set(id, songs);
+  }
+  return songs;
+}
 
 export const useHomeStore = create<HomeState>((set, get) => ({
   recommendations: [],
@@ -54,6 +71,24 @@ export const useHomeStore = create<HomeState>((set, get) => ({
     } catch {
     } finally {
       set({ isLoading: false });
+    }
+  },
+
+  getToplistSongs: async (id: string) => {
+    const cached = getCachedToplistSongs(id);
+    if (cached) return cached;
+    const numId = Number(id);
+    if (!Number.isFinite(numId)) return [];
+    try {
+      const songs = await api.getNewSongs(numId, 30);
+      if (toplistSongsCache.size >= TOPLIST_SONGS_CACHE_MAX) {
+        const firstKey = toplistSongsCache.keys().next().value;
+        if (firstKey !== undefined) toplistSongsCache.delete(firstKey);
+      }
+      toplistSongsCache.set(id, songs);
+      return songs;
+    } catch {
+      return [];
     }
   },
 }));

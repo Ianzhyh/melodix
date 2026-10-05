@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { RouteState } from '../types/playback';
-import * as api from '../api/client';
 import { useConfigStore } from '../stores/configStore';
 import { useFavoriteStore } from '../stores/favoriteStore';
-import { useHomeStore } from '../stores/homeStore';
+import { useHistoryStore } from '../stores/historyStore';
 import { useDownloadStore } from '../stores/downloadStore';
 import { useUIStore } from '../stores/uiStore';
 import { useLocalLibraryStore } from '../stores/localLibraryStore';
+import { useCustomLibraryStore } from '../stores/customLibraryStore';
+import { getLibraryCoverUrl } from '../utils/cover';
+import { ImportQQPlaylistModal } from './ImportQQPlaylistModal';
 
 interface SidebarProps {
   activePage: RouteState;
@@ -63,21 +65,34 @@ const Icons = {
 
 export function Sidebar({ activePage, onNavigate }: SidebarProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const recommendations = useHomeStore((s) => s.recommendations);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importHovered, setImportHovered] = useState(false);
   const { sidebarOpen, setSidebarOpen } = useConfigStore();
-  const favoriteCount = useFavoriteStore((s) => s.favorites.length);
+  const favoriteCount = useFavoriteStore((s) => s.favoriteIds.length);
+  const historyCount = useHistoryStore((s) => s.entries.length);
   const localLibraryCount = useLocalLibraryStore((s) => s.totalCount);
+  const customLibraries = useCustomLibraryStore((s) => s.libraries);
   const activeDownloadCount = useDownloadStore((s) => s.activeCount());
   const setDownloadPanelOpen = useUIStore((s) => s.setDownloadPanelOpen);
 
   const tabs = [
-    { id: 'home', title: 'Home', icon: Icons.home },
-    { id: 'search', title: 'Discover', icon: Icons.search },
-    { id: 'settings', title: 'Settings', icon: Icons.settings },
+    { id: 'home', title: '首页', icon: Icons.home },
+    { id: 'search', title: '发现', icon: Icons.search },
+    { id: 'settings', title: '设置', icon: Icons.settings },
   ];
 
   return (
     <>
+      {showImportModal && (
+        <ImportQQPlaylistModal
+          onClose={() => setShowImportModal(false)}
+          onImported={(libId) => {
+            setShowImportModal(false);
+            onNavigate({ page: 'custom-library', id: libId });
+            setSidebarOpen(false);
+          }}
+        />
+      )}
       <style>{`
         /* Sidebar drawer styles */
         @media (max-width: 900px) {
@@ -116,14 +131,14 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
 
       <motion.div
         animate={{ width: isExpanded ? 'var(--sidebar-width)' : 72 }}
-        transition={{ type: 'spring', stiffness: 400, damping: 40 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
         className={`sidebar-container ${sidebarOpen ? 'open' : ''}`}
         style={{
           flexShrink: 0,
           background: 'var(--glass-bg)',
           backdropFilter: 'var(--glass-blur) var(--glass-saturate)',
           WebkitBackdropFilter: 'var(--glass-blur) var(--glass-saturate)',
-          borderRight: '1px solid var(--glass-border)',
+          borderRight: 'none',
           transform: 'translateZ(0)',
           display: 'flex',
           flexDirection: 'column',
@@ -185,7 +200,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                   whiteSpace: 'nowrap',
                 }}
                 whileHover={{ color: 'var(--color-text, #fff)' }}
-                whileTap={{ scale: 0.98 }}
+                whileTap={{ scale: 0.95 }}
               >
                 {isActive && (
                   <motion.div
@@ -199,7 +214,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                       background: 'var(--color-primary, #6366f1)',
                       borderRadius: 4,
                     }}
-                    transition={{ type: 'spring', stiffness: 400, damping: 40 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 25 }}
                   />
                 )}
                 <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -230,23 +245,28 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
           <AnimatePresence>
             {isExpanded && (
               <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '4px 12px', color: 'var(--color-text-dim, rgba(255,255,255,0.65))', marginBottom: 8, overflow: 'hidden' }}
+                initial={{ opacity: 0, height: 0, marginTop: -4, marginBottom: -4 }}
+                animate={{ opacity: 1, height: 'auto', marginTop: 0, marginBottom: 8 }}
+                exit={{ opacity: 0, height: 0, marginTop: -4, marginBottom: -4 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                style={{ overflow: 'hidden' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20 }}>
-                  {Icons.library}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '4px 12px', color: 'var(--color-text-dim, rgba(255,255,255,0.65))' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, flexShrink: 0 }}>
+                    {Icons.library}
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>我的音乐库</span>
                 </div>
-                <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1 }}>Your Library</span>
               </motion.div>
             )}
           </AnimatePresence>
 
           {/* Playlists List */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', flex: 1, paddingRight: 4 }} className="hide-scrollbar">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', flex: 1, paddingRight: 4 }}>
             {/* Liked Songs Entry */}
             <motion.div
+              layout
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
               onClick={() => {
                 onNavigate({ page: 'favorites' });
                 setSidebarOpen(false);
@@ -255,21 +275,23 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 12,
-                padding: isExpanded ? '6px 10px' : '0',
-                justifyContent: isExpanded ? 'flex-start' : 'center',
+                padding: isExpanded ? '6px 12px' : '0 8px',
+                justifyContent: 'flex-start',
                 height: 48,
                 borderRadius: 12,
                 cursor: 'pointer',
                 color: activePage.page === 'favorites' ? 'var(--color-text, #fff)' : 'var(--color-text-dim, rgba(255,255,255,0.65))',
                 background: activePage.page === 'favorites' ? 'var(--color-hover, rgba(255,255,255,0.03))' : 'transparent',
-                transition: 'background 0.2s',
               }}
               whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))', color: 'var(--color-text, #fff)' }}
-              whileTap={{ scale: 0.98 }}
+              whileTap={{ scale: 0.95 }}
             >
-              <div style={{
-                width: isExpanded ? 32 : 28,
-                height: isExpanded ? 32 : 28,
+              <motion.div
+                layout
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                style={{
+                  width: isExpanded ? 32 : 28,
+                  height: isExpanded ? 32 : 28,
                 borderRadius: 6,
                 background: 'var(--color-primary, #6366f1)',
                 display: 'flex',
@@ -278,7 +300,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                 flexShrink: 0,
               }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="var(--color-text)" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
-              </div>
+              </motion.div>
 
               <AnimatePresence>
                 {isExpanded && (
@@ -288,8 +310,65 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                     exit={{ opacity: 0, x: -10, transition: { duration: 0.1 } }}
                     style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', whiteSpace: 'nowrap' }}
                   >
-                    <span style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>Liked Songs</span>
-                    <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>Playlist • {favoriteCount} songs</span>
+                    <span style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>收藏的音乐</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>歌单 • {favoriteCount} 首</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+
+            {/* 最近播放入口 */}
+            <motion.div
+              layout
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              onClick={() => {
+                onNavigate({ page: 'history' });
+                setSidebarOpen(false);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: isExpanded ? '6px 12px' : '0 8px',
+                justifyContent: 'flex-start',
+                height: 48,
+                borderRadius: 12,
+                cursor: 'pointer',
+                color: activePage.page === 'history' ? 'var(--color-text, #fff)' : 'var(--color-text-dim, rgba(255,255,255,0.65))',
+                background: activePage.page === 'history' ? 'var(--color-hover, rgba(255,255,255,0.03))' : 'transparent',
+              }}
+              whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))', color: 'var(--color-text, #fff)' }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <motion.div
+                layout
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                style={{
+                  width: isExpanded ? 32 : 28,
+                  height: isExpanded ? 32 : 28,
+                borderRadius: 6,
+                background: 'var(--color-success, #10b981)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+              </motion.div>
+
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10, transition: { duration: 0.1 } }}
+                    style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', whiteSpace: 'nowrap' }}
+                  >
+                    <span style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>最近播放</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>历史 • {historyCount} 首</span>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -297,6 +376,8 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
 
             {/* 本地音乐入口 */}
             <motion.div
+              layout
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
               onClick={() => {
                 onNavigate({ page: 'local-library' });
                 setSidebarOpen(false);
@@ -305,21 +386,23 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 12,
-                padding: isExpanded ? '6px 10px' : '0',
-                justifyContent: isExpanded ? 'flex-start' : 'center',
+                padding: isExpanded ? '6px 12px' : '0 8px',
+                justifyContent: 'flex-start',
                 height: 48,
                 borderRadius: 12,
                 cursor: 'pointer',
                 color: activePage.page === 'local-library' ? 'var(--color-text, #fff)' : 'var(--color-text-dim, rgba(255,255,255,0.65))',
                 background: activePage.page === 'local-library' ? 'var(--color-hover, rgba(255,255,255,0.03))' : 'transparent',
-                transition: 'background 0.2s',
               }}
               whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))', color: 'var(--color-text, #fff)' }}
-              whileTap={{ scale: 0.98 }}
+              whileTap={{ scale: 0.95 }}
             >
-              <div style={{
-                width: isExpanded ? 32 : 28,
-                height: isExpanded ? 32 : 28,
+              <motion.div
+                layout
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                style={{
+                  width: isExpanded ? 32 : 28,
+                  height: isExpanded ? 32 : 28,
                 borderRadius: 6,
                 background: 'var(--color-accent, #8b5cf6)',
                 display: 'flex',
@@ -332,7 +415,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                   <circle cx="6" cy="18" r="3" />
                   <circle cx="18" cy="16" r="3" />
                 </svg>
-              </div>
+              </motion.div>
 
               <AnimatePresence>
                 {isExpanded && (
@@ -343,84 +426,218 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                     style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', whiteSpace: 'nowrap' }}
                   >
                     <span style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>本地音乐</span>
-                    <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>Library • {localLibraryCount} songs</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>本地库 • {localLibraryCount} 首</span>
                   </motion.div>
                 )}
               </AnimatePresence>
             </motion.div>
 
-            {recommendations.map(playlist => (
+            {/* 自定义音乐库列表（不再展示在线推荐歌单） */}
+            {customLibraries.map((lib) => {
+              const libCover = getLibraryCoverUrl(lib, 80);
+              return (
+                <motion.div
+                  layout
+                  transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                  key={lib.id}
+                  onClick={() => {
+                    onNavigate({ page: 'custom-library', id: lib.id });
+                    setSidebarOpen(false);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: isExpanded ? '6px 12px' : '0 8px',
+                    justifyContent: 'flex-start',
+                    height: 48,
+                    borderRadius: 12,
+                    cursor: 'pointer',
+                    color: activePage.page === 'custom-library' && activePage.id === lib.id ? 'var(--color-text, #fff)' : 'var(--color-text-dim, rgba(255,255,255,0.65))',
+                    background: activePage.page === 'custom-library' && activePage.id === lib.id ? 'var(--color-hover, rgba(255,255,255,0.03))' : 'transparent',
+                  }}
+                  whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))', color: 'var(--color-text, #fff)' }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  <motion.div
+                    layout
+                    transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                    style={{
+                      width: isExpanded ? 32 : 28,
+                      height: isExpanded ? 32 : 28,
+                    borderRadius: 6,
+                    overflow: 'hidden',
+                    // 纯色默认占位（与音乐库页面默认封面保持一致）
+                    background: 'var(--color-primary, #6366f1)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}>
+                    {libCover ? (
+                      <img
+                        src={libCover}
+                        alt=""
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                        <polyline points="9 7 15 10 9 13 9 7" />
+                      </svg>
+                    )}
+                  </motion.div>
+
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: -10, transition: { duration: 0.1 } }}
+                        style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', whiteSpace: 'nowrap' }}
+                      >
+                        <span style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>{lib.name}</span>
+                        <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>音乐库 • {lib.songs.length} 首</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              );
+            })}
+
+            {/* 新建音乐库入口 */}
+            <motion.div
+              layout
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              onClick={() => {
+                useUIStore.getState().setLibraryCreateOpen(true);
+                onNavigate({ page: 'custom-library' });
+                setSidebarOpen(false);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: isExpanded ? '6px 12px' : '0 8px',
+                justifyContent: 'flex-start',
+                height: 48,
+                borderRadius: 12,
+                cursor: 'pointer',
+                color: 'var(--color-text-dim, rgba(255,255,255,0.65))',
+              }}
+              whileHover={{ color: 'var(--color-primary, #6366f1)' }}
+              whileTap={{ scale: 0.95 }}
+            >
               <motion.div
-                key={playlist.id}
-                onClick={() => {
-                  onNavigate({ page: 'playlist', id: playlist.id, source: playlist.source });
-                  setSidebarOpen(false);
-                }}
+                layout
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
                 style={{
+                  width: isExpanded ? 32 : 28,
+                  height: isExpanded ? 32 : 28,
+                borderRadius: 6,
+                border: '1px dashed var(--glass-border)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </motion.div>
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.span
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10, transition: { duration: 0.1 } }}
+                    style={{ fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap' }}
+                  >
+                    新建音乐库
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </motion.div>
+
+            {/* 导入 QQ 音乐歌单入口 */}
+            <motion.div
+              layout
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              onClick={() => setShowImportModal(true)}
+              onHoverStart={() => setImportHovered(true)}
+              onHoverEnd={() => setImportHovered(false)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: isExpanded ? '6px 12px' : '0 8px',
+                justifyContent: 'flex-start',
+                height: 48,
+                borderRadius: 12,
+                cursor: 'pointer',
+                color: importHovered ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                transition: 'color 0.15s',
+              }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <motion.div
+                layout
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                style={{
+                  width: isExpanded ? 32 : 28,
+                  height: isExpanded ? 32 : 28,
+                  borderRadius: 6,
+                  border: '1px dashed var(--color-primary-20)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 12,
-                  padding: isExpanded ? '6px 10px' : '0',
-                  justifyContent: isExpanded ? 'flex-start' : 'center',
-                  height: 48,
-                  borderRadius: 12,
-                  cursor: 'pointer',
-                  color: activePage.page === 'playlist' && activePage.id === playlist.id ? 'var(--color-text, #fff)' : 'var(--color-text-dim, rgba(255,255,255,0.65))',
-                  background: activePage.page === 'playlist' && activePage.id === playlist.id ? 'var(--color-hover, rgba(255,255,255,0.03))' : 'transparent',
-                  transition: 'background 0.2s',
-                }}
-                whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))', color: 'var(--color-text, #fff)' }}
-                whileTap={{ scale: 0.98 }}
-              >
-                <img
-                  src={playlist.cover ? api.getProxyImageUrl(playlist.cover) : api.getProxiedCoverUrl(playlist.id, playlist.source || 'netease', 80)}
-                  alt=""
-                  style={{
-                    width: isExpanded ? 32 : 28,
-                    height: isExpanded ? 32 : 28,
-                    borderRadius: 6,
-                    objectFit: 'cover',
-                    flexShrink: 0,
-                    background: 'var(--color-img-placeholder)',
-                  }}
-                />
-                
-                <AnimatePresence>
-                  {isExpanded && (
-                    <motion.div
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -10, transition: { duration: 0.1 } }}
-                      style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', whiteSpace: 'nowrap' }}
-                    >
-                      <span style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>{playlist.name}</span>
-                      <span style={{ fontSize: 11, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>Playlist • {playlist.trackCount || 0} songs</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
               </motion.div>
-            ))}
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10, transition: { duration: 0.1 } }}
+                    style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', whiteSpace: 'nowrap' }}
+                  >
+                    <span style={{ fontSize: 14, fontWeight: 500 }}>导入 QQ 歌单</span>
+                    <span style={{ fontSize: 11, color: importHovered ? 'var(--color-primary)' : 'var(--color-text-faint)', transition: 'color 0.15s', opacity: 0.8 }}>从 QQ 音乐一键导入</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
           </div>
-          <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
         </div>
 
         {/* Bottom: Download entry + Collapse toggle */}
         <div style={{ padding: '20px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {/* Download entry button */}
           <motion.button
+            layout
+            transition={{ type: 'spring', stiffness: 300, damping: 25 }}
             onClick={() => setDownloadPanelOpen(true)}
             aria-label="下载列表"
             style={{
               height: 44,
-              width: isExpanded ? '100%' : 44,
+              width: '100%',
               borderRadius: 12,
               border: '1px solid var(--color-border, rgba(255, 255, 255, 0.04))',
               background: 'var(--color-hover, rgba(255, 255, 255, 0.02))',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: isExpanded ? 'flex-start' : 'center',
-              padding: isExpanded ? '0 12px' : 0,
+              justifyContent: 'flex-start',
+              padding: '0 12px',
               outline: 'none',
               color: 'var(--color-text-dim, rgba(255, 255, 255, 0.65))',
               overflow: 'hidden',
@@ -428,7 +645,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
               position: 'relative',
             }}
             whileHover={{ color: 'var(--color-text, #fff)', background: 'var(--color-hover, rgba(255, 255, 255, 0.03))' }}
-            whileTap={{ scale: 0.96 }}
+            whileTap={{ scale: 0.95 }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20, position: 'relative' }}>
@@ -438,7 +655,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                     key={activeDownloadCount}
                     initial={{ scale: 0 }}
                     animate={{ scale: 1 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                    transition={{ type: 'spring', stiffness: 350, damping: 20 }}
                     style={{
                       position: 'absolute',
                       top: -6,
@@ -483,22 +700,22 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
             onClick={() => setIsExpanded(!isExpanded)}
             style={{
               height: 44,
-              width: isExpanded ? '100%' : 44,
+              width: '100%',
               borderRadius: 12,
               border: '1px solid var(--color-border, rgba(255, 255, 255, 0.04))',
               background: 'var(--color-hover, rgba(255, 255, 255, 0.02))',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: isExpanded ? 'flex-start' : 'center',
-              padding: isExpanded ? '0 12px' : 0,
+              justifyContent: 'flex-start',
+              padding: '0 12px',
               outline: 'none',
               color: 'var(--color-text-dim, rgba(255, 255, 255, 0.65))',
               overflow: 'hidden',
               whiteSpace: 'nowrap',
             }}
             whileHover={{ color: 'var(--color-text, #fff)', background: 'var(--color-hover, rgba(255, 255, 255, 0.03))' }}
-            whileTap={{ scale: 0.96 }}
+            whileTap={{ scale: 0.95 }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20 }}>
@@ -512,7 +729,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                     exit={{ opacity: 0, transition: { duration: 0.1 } }}
                     style={{ fontSize: 13, fontWeight: 500 }}
                   >
-                    Collapse
+                    折叠
                   </motion.span>
                 )}
               </AnimatePresence>

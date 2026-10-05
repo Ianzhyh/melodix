@@ -35,7 +35,9 @@ function httpsGet(urlStr, headers = {}) {
 // 标准化歌曲对象
 // ============================================
 function normalizeSong(song) {
-  // 兼容新旧两种格式
+  // 兼容新旧两种格式（时长：原始值 <10000 视为秒，否则视为毫秒，统一换算为秒）
+  const raw = song.duration || song.DURATION || 0;
+  const ms = raw < 10000 ? raw * 1000 : raw;
   return {
     id: String(song.rid || song.MUSICRID || song.id || '').replace('MUSIC_', ''),
     title: song.name || song.NAME || '',
@@ -45,7 +47,7 @@ function normalizeSong(song) {
     albumId: String(song.albumid || song.ALBUMID || ''),
     pic: song.albumpic || song.pic || '',
     picId: '',
-    duration: Math.floor((song.duration || song.DURATION || 0) / (typeof song.DURATION !== 'undefined' && song.DURATION < 10000 ? 1 : 1000)),
+    duration: Math.floor(ms / 1000),
     lyricId: String(song.rid || song.MUSICRID || song.id || '').replace('MUSIC_', ''),
     source: 'kuwo',
   };

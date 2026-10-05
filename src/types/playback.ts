@@ -13,6 +13,36 @@ export interface Song {
   format?: string;     // 音频格式（mp3/flac/wav/aac/ogg）
   lyrics?: string;        // LRC 歌词文本（本地歌曲补齐后存储）
   onlineSource?: string;  // 在线源（如 netease）
+  albumId?: string;       // 专辑 ID（专辑详情页跳转）
+  artists?: ArtistRef[];  // 歌手 ID 列表（歌手页跳转）
+}
+
+export interface ArtistRef {
+  id: string;
+  name: string;
+}
+
+export interface AlbumDetail {
+  id: string;
+  name: string;
+  cover: string;
+  artist: string;
+  artistId?: string;
+  date?: string;
+  company?: string;
+  desc?: string;
+  tracks: Song[];
+  source: string;
+}
+
+export interface ArtistDetail {
+  id: string;
+  name: string;
+  cover: string;
+  desc?: string;
+  songs: Song[];
+  albums?: { id: string; name: string; cover: string; date?: string }[];
+  source: string;
 }
 
 export interface WordInfo {
@@ -33,6 +63,9 @@ export interface RouteState {
   page: string;
   id?: string;
   source?: string;
+  name?: string;   // 详情页展示用兜底名称（点击入口携带）
+  cover?: string;  // 详情页展示用兜底封面
+  keyword?: string; // 搜索关键词（主页搜索框跳转发现页时携带）
 }
 
 export type RepeatMode = 'off' | 'all' | 'one';
@@ -51,6 +84,31 @@ export interface SearchResult {
   songs: Song[];
   total?: number;
   page?: number;
+}
+
+export interface SearchArtistItem {
+  id: string;
+  name: string;
+  pic: string;
+  songCount?: number;
+  albumCount?: number;
+}
+
+export interface SearchAlbumItem {
+  id: string;
+  name: string;
+  cover: string;
+  artist: string;
+  artistId?: string;
+  date?: string;
+  songCount?: number;
+}
+
+export interface SearchPlaylistItem {
+  id: string;
+  name: string;
+  cover: string;
+  trackCount?: number;
 }
 
 export interface PlaylistDetail {

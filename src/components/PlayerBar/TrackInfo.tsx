@@ -1,12 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-
-interface Song {
-  name: string;
-  artist: string;
-  coverUrl: string;
-  id: string;
-}
+import type { Song } from '../../types/playback';
+import { getSongCoverUrl } from '../../utils/cover';
+import { AddToLibraryModal } from '../AddToLibraryModal';
+import { useConfigStore } from '../../stores/configStore';
 
 interface TrackInfoProps {
   song: Song | null;
@@ -20,8 +17,11 @@ interface TrackInfoProps {
   onToggleMoreMenu: () => void;
   onCloseMoreMenu: () => void;
   onAddToQueue: () => void;
+  onOpenArtist: (id: string, name: string) => void;
   onDownload: () => void;
   onCopySongName: () => void;
+  radioMode: boolean;
+  onToggleRadio: () => void;
 }
 
 export const TrackInfo: React.FC<TrackInfoProps> = ({
@@ -36,9 +36,19 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
   onToggleMoreMenu,
   onCloseMoreMenu,
   onAddToQueue,
+  onOpenArtist,
   onDownload,
   onCopySongName,
+  radioMode,
+  onToggleRadio,
 }) => {
+  // 「添加到音乐库」选择器状态：仅由更多菜单的 Add to Library 项打开，
+  // 关闭后自然复位（下一次打开时初始为 false）
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  const enableTransparency = useConfigStore(s => s.enableTransparency);
+
+  const coverUrl = song ? getSongCoverUrl(song, 300) : '';
+
   if (!song) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, flex: 1, minWidth: 0 }}>
@@ -54,7 +64,8 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, flex: 1, minWidth: 0 }}>
+    <>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, flex: '1 1 0', minWidth: 180, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: '100%' }}>
         {!lyricsOpen && (
           <motion.div
@@ -74,7 +85,7 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
               <AnimatePresence mode="popLayout">
                 <motion.img
                   key={song.id}
-                  src={song.coverUrl}
+                  src={coverUrl}
                   alt={song.name}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   initial={{ opacity: 0 }}
@@ -89,7 +100,17 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
             </motion.div>
             <div style={{ display: 'flex', flexDirection: 'column', maxWidth: 150 }}>
               <motion.span layoutId="track-title" style={{ fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} transition={{ type: 'spring', stiffness: 300, damping: 25 }}>{song.name}</motion.span>
-              <motion.span layoutId="track-artist" style={{ fontSize: 12, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} transition={{ type: 'spring', stiffness: 300, damping: 25 }}>{song.artist}</motion.span>
+              <motion.span layoutId="track-artist" style={{ fontSize: 12, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} transition={{ type: 'spring', stiffness: 300, damping: 25 }}>
+                {song.artists && song.artists.length > 0 && song.artists[0].id ? (
+                  <span
+                    className="md-text-link"
+                    title={`查看歌手: ${song.artists[0].name}`}
+                    onClick={(e) => { e.stopPropagation(); onOpenArtist(song.artists![0].id, song.artists![0].name); }}
+                  >
+                    {song.artist}
+                  </span>
+                ) : song.artist}
+              </motion.span>
             </div>
           </motion.div>
         )}
@@ -99,15 +120,16 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={onToggleFavorite}
+            aria-label={isFavorited ? '取消收藏' : '收藏'}
             style={{ background: 'none', border: 'none', color: isFavorited ? 'var(--color-danger)' : 'inherit', cursor: 'pointer', padding: 0 }}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
           </motion.button>
-          <motion.button whileHover={{ scale: 1.1, color: 'var(--color-text)' }} whileTap={{ scale: 0.9 }} onClick={onToggleComments} style={{ background: 'none', border: 'none', color: showComments ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
+          <motion.button whileHover={{ scale: 1.1, color: 'var(--color-text)' }} whileTap={{ scale: 0.9 }} onClick={onToggleComments} aria-label="评论" style={{ background: 'none', border: 'none', color: showComments ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
           </motion.button>
           <div style={{ position: 'relative' }}>
-            <motion.button whileHover={{ scale: 1.1, color: 'var(--color-text)' }} whileTap={{ scale: 0.9 }} onClick={onToggleMoreMenu} style={{ background: 'none', border: 'none', color: showMoreMenu ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
+            <motion.button whileHover={{ scale: 1.1, color: 'var(--color-text)' }} whileTap={{ scale: 0.9 }} onClick={onToggleMoreMenu} aria-label="更多操作" style={{ background: 'none', border: 'none', color: showMoreMenu ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
             </motion.button>
             <AnimatePresence>
@@ -121,16 +143,19 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
                     transition={{ duration: 0.15 }}
                     style={{
                       position: 'absolute', bottom: '100%', left: 0, marginBottom: 8,
-                      background: 'var(--color-bg-elevated)',
-                      border: '1px solid var(--glass-border)',
+                      background: enableTransparency ? 'var(--acrylic-noise), var(--acrylic-tint)' : 'var(--color-bg-elevated)',
+                      border: '1px solid var(--color-border)',
                       borderRadius: 8, padding: 4, minWidth: 180,
-                      backdropFilter: 'blur(40px)',
+                      backdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
+                      WebkitBackdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
                       boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
                       zIndex: 'var(--z-modal)',
                     }}
                   >
                     {[
                       { label: 'Add to Queue', action: () => { onCloseMoreMenu(); onAddToQueue(); } },
+                      { label: 'Add to Library', action: () => { onCloseMoreMenu(); setLibraryPickerOpen(true); } },
+                      { label: radioMode ? '✓ 相似歌曲电台' : '相似歌曲电台', action: () => { onCloseMoreMenu(); onToggleRadio(); } },
                       { label: 'Download', action: () => { onCloseMoreMenu(); onDownload(); } },
                       { label: 'Copy Song Name', action: () => { onCloseMoreMenu(); onCopySongName(); } },
                     ].map(item => (
@@ -156,5 +181,10 @@ export const TrackInfo: React.FC<TrackInfoProps> = ({
         </div>
       </div>
     </div>
+
+    {libraryPickerOpen && song && (
+      <AddToLibraryModal song={song} onClose={() => setLibraryPickerOpen(false)} />
+    )}
+    </>
   );
 };

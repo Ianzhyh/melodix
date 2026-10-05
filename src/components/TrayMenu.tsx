@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import type { Song } from '../types/playback';
 import { getSongCoverUrl } from '../utils/cover';
 
@@ -67,11 +67,19 @@ export function TrayMenu() {
   }, []);
 
   const handleAction = (action: string) => {
+    // show/exit 直接走 Rust 命令：主窗口隐藏/挂起时其 WebView 可能不处理广播消息，
+    // 由原生侧操作窗口最可靠（exit 时进程即退，无需再隐藏托盘窗口）
+    if (action === 'show') {
+      invoke('show_main_window').catch(console.error);
+      getCurrentWindow().hide();
+      return;
+    }
+    if (action === 'exit') {
+      invoke('exit_app').catch(console.error);
+      return;
+    }
     if (channel) {
       channel.postMessage({ action });
-    }
-    if (action === 'show' || action === 'exit') {
-      getCurrentWindow().hide();
     }
   };
 
@@ -134,7 +142,7 @@ export function TrayMenu() {
               {current?.name || '未播放'}
             </div>
             <div style={{ fontSize: 13, opacity: 0.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {current?.artists?.map(a => a.name).join(', ') || 'Melodix'}
+              {current?.artist || 'Melodix'}
             </div>
           </div>
         </div>

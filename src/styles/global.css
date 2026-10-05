@@ -10,8 +10,12 @@ html, body {
   background-color: transparent !important;
   color: var(--color-text);
   font-family: var(--font-main);
+  font-weight: 500;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
   user-select: none;
+  overscroll-behavior: contain;
 }
 
 #root {
@@ -60,6 +64,50 @@ input[type="range"]::-moz-range-thumb {
   border: none;
 }
 
+/* 垂直音量滑块（writing-mode 方案，Chromium 标准支持，可拖动） */
+input[type="range"].vertical-range {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 20px;
+  height: 100px;
+}
+
+input[type="range"].vertical-range::-webkit-slider-runnable-track {
+  width: var(--track-height);
+  height: auto;
+  margin-top: 0;
+  background: linear-gradient(to top, var(--theme-color, var(--color-primary)) var(--progress, 0%), rgba(255, 255, 255, 0.2) var(--progress, 0%));
+  border-radius: calc(var(--track-height) / 2);
+}
+
+input[type="range"].vertical-range::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  margin-left: calc((var(--track-height) - 12px) / 2);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+input[type="range"].vertical-range::-moz-range-track {
+  width: var(--track-height);
+  background: linear-gradient(to top, var(--theme-color, var(--color-primary)) var(--progress, 0%), rgba(255, 255, 255, 0.2) var(--progress, 0%));
+  border-radius: calc(var(--track-height) / 2);
+}
+
+input[type="range"].vertical-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  margin-left: calc((var(--track-height) - 12px) / 2);
+  appearance: none;
+  -moz-appearance: none;
+}
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
@@ -85,6 +133,26 @@ button {
   font-family: inherit;
 }
 
+/* 弹层（QueuePanel/CommentPanel/DownloadPanel 等含 role=dialog 的面板）滚动不外泄 */
+[role="dialog"] {
+  overscroll-behavior: contain;
+}
+
+/* 键盘焦点可见；鼠标点击不显示 outline */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* 全局兜底：禁用按钮统一禁止光标 */
+button:disabled {
+  cursor: not-allowed;
+}
+
 /* Shimmer skeleton animation */
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -105,7 +173,20 @@ button {
   animation: shimmer 1.5s infinite;
 }
 
-body[data-theme="light"] .shimmer-skeleton {
+html[data-theme="light"] .shimmer-skeleton {
   background: linear-gradient(90deg, rgba(15,23,42,0.03) 25%, rgba(15,23,42,0.08) 50%, rgba(15,23,42,0.03) 75%);
   background-size: 200% 100%;
+}
+
+/* 可点击的文本链接（歌手名/专辑名）：与正文同色，悬停时主题色 + 下划线 */
+.md-text-link {
+  cursor: pointer;
+  transition: color 0.15s ease;
+  border-radius: 2px;
+}
+
+.md-text-link:hover {
+  color: var(--color-primary, #6366f1) !important;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }

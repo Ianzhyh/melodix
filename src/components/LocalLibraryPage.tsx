@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion } from 'framer-motion';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { UnlistenFn } from '@tauri-apps/api/event';
@@ -6,123 +7,12 @@ import { useLocalLibraryStore, type ScanResult } from '../stores/localLibrarySto
 import { usePlaybackStore } from '../stores/playbackStore';
 import { useConfigStore } from '../stores/configStore';
 import { useToastStore } from '../stores/toastStore';
-import { getSongCoverUrl } from '../utils/cover';
-import type { Song } from '../types/playback';
+import { AddToLibraryButton } from './AddToLibraryModal';
+import { TrackList, TrackListHeader } from './common/TrackList';
+import { TrackRow } from './common/TrackRow';
 
 // 支持的音频扩展名
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'aac', 'm4a', 'ogg'];
-
-// 格式时长 mm:ss
-function formatDuration(seconds?: number): string {
-  if (!seconds || seconds <= 0 || !Number.isFinite(seconds)) return '--:--';
-  const total = Math.floor(seconds);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-interface LocalTrackRowProps {
-  song: Song;
-  index: number;
-  isCurrent: boolean;
-  isPlaying: boolean;
-  onPlay: (index: number) => void;
-  coverUrl: string;
-}
-
-// 单行歌曲
-const LocalTrackRow = React.memo(function LocalTrackRow({
-  song,
-  index,
-  isCurrent,
-  isPlaying,
-  onPlay,
-  coverUrl,
-}: LocalTrackRowProps) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: Math.min(index * 0.02, 0.3) }}
-      className="ll-track-row"
-      onClick={() => onPlay(index)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 14,
-        padding: '10px 12px',
-        borderRadius: 8,
-        cursor: 'pointer',
-        transition: 'background 0.15s',
-      }}
-      whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))' }}
-      whileTap={{ scale: 0.995 }}
-    >
-      <div style={{ width: 24, display: 'flex', justifyContent: 'center', alignItems: 'center', flexShrink: 0 }}>
-        <span className="ll-track-index" style={{ fontSize: 13, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-          {index + 1}
-        </span>
-        <span className="ll-play-icon" style={{ display: 'none', color: isCurrent ? 'var(--color-primary)' : 'var(--color-text)' }}>
-          {isCurrent && isPlaying ? (
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3" height="12" rx="0.5"/><rect x="10" y="2" width="3" height="12" rx="0.5"/></svg>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z"/></svg>
-          )}
-        </span>
-      </div>
-      <img
-        src={coverUrl}
-        alt=""
-        loading="lazy"
-        decoding="async"
-        onError={(e) => { e.currentTarget.style.display = 'none'; }}
-        style={{ width: 40, height: 40, borderRadius: 6, objectFit: 'cover', background: 'var(--color-img-placeholder)', flexShrink: 0 }}
-      />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontSize: 14,
-          fontWeight: 500,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          color: isCurrent ? 'var(--color-primary)' : 'var(--color-text, rgba(255,255,255,0.95))'
-        }}>
-          {song.name}
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--color-text-dim, rgba(255,255,255,0.65))', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {song.artist || '未知艺术家'}
-        </div>
-      </div>
-      <span style={{ fontSize: 12, color: 'var(--color-text-dim, rgba(255,255,255,0.65))', flexShrink: 0, minWidth: 100, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {song.album || '未知专辑'}
-      </span>
-      <span style={{ fontSize: 12, color: 'var(--color-text-faint, rgba(255,255,255,0.45))', flexShrink: 0, width: 48, textAlign: 'right' }}>
-        {formatDuration(song.duration)}
-      </span>
-      {song.format && (
-        <span style={{
-          fontSize: 10,
-          fontWeight: 600,
-          color: 'var(--color-text-dim, rgba(255,255,255,0.65))',
-          background: 'var(--color-hover, rgba(255,255,255,0.06))',
-          padding: '2px 6px',
-          borderRadius: 4,
-          flexShrink: 0,
-          textTransform: 'uppercase',
-          letterSpacing: 0.5,
-        }}>
-          {song.format}
-        </span>
-      )}
-    </motion.div>
-  );
-}, (prevProps, nextProps) => {
-  return (
-    prevProps.isCurrent === nextProps.isCurrent &&
-    prevProps.isPlaying === nextProps.isPlaying &&
-    prevProps.coverUrl === nextProps.coverUrl
-  );
-});
 
 export function LocalLibraryPage() {
   const songs = useLocalLibraryStore((s) => s.songs);
@@ -151,6 +41,14 @@ export function LocalLibraryPage() {
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Virtualizer setup
+  const rowVirtualizer = useVirtualizer({
+    count: songs.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 62, // 60px row + 2px gap
+    overscan: 10,
+  });
 
   // 挂载时加载歌曲、刷新总数、监听文件监控更新
   useEffect(() => {
@@ -291,13 +189,24 @@ export function LocalLibraryPage() {
       onScroll={handleScroll}
       style={{ height: '100%', overflowY: 'auto' }}
     >
-      <div style={{ padding: '32px 40px', maxWidth: 1200, margin: '0 auto' }}>
+      <div style={{ padding: 'clamp(20px, 3vw, 40px)', maxWidth: 1200, margin: '0 auto' }}>
       <style>{`
         .ll-track-row:hover .ll-track-index {
           display: none !important;
         }
         .ll-track-row:hover .ll-play-icon {
           display: inline-flex !important;
+        }
+        .ll-track-row .cl-add-btn {
+          opacity: 0;
+          pointer-events: none;
+        }
+        .ll-track-row:hover .cl-add-btn {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .ll-toolbar-btn:hover:not(:disabled) {
+          background: var(--color-surface-active, rgba(255,255,255,0.08)) !important;
         }
       `}</style>
 
@@ -349,6 +258,7 @@ export function LocalLibraryPage() {
         />
         <button
           onClick={handleImportFiles}
+          className="ll-toolbar-btn"
           disabled={scanning}
           style={toolbarButtonStyle(scanning)}
         >
@@ -356,6 +266,7 @@ export function LocalLibraryPage() {
         </button>
         <button
           onClick={handleImportFolder}
+          className="ll-toolbar-btn"
           disabled={scanning}
           style={toolbarButtonStyle(scanning)}
         >
@@ -363,6 +274,7 @@ export function LocalLibraryPage() {
         </button>
         <button
           onClick={handleRescan}
+          className="ll-toolbar-btn"
           disabled={scanning}
           style={toolbarButtonStyle(scanning)}
         >
@@ -370,6 +282,7 @@ export function LocalLibraryPage() {
         </button>
         <button
           onClick={handleEnrichAll}
+          className="ll-toolbar-btn"
           disabled={enriching || scanning}
           style={toolbarButtonStyle(enriching || scanning)}
         >
@@ -494,31 +407,85 @@ export function LocalLibraryPage() {
 
       {/* 歌曲列表 */}
       {songs.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {songs.map((song, index) => (
-            <LocalTrackRow
-              key={song.id}
-              song={song}
-              index={index}
-              isCurrent={current?.id === song.id}
-              isPlaying={isPlaying}
-              onPlay={handlePlay}
-              coverUrl={getSongCoverUrl(song, 80)}
-            />
-          ))}
+        <TrackList showCover={true} actionWidth="160px">
+          <div style={{ padding: '0 12px' }}>
+            <TrackListHeader showCover={true} />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <div 
+              style={{ 
+                height: `${rowVirtualizer.getTotalSize()}px`, 
+                width: '100%', 
+                position: 'relative',
+              }}
+            >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const index = virtualRow.index;
+              const song = songs[index];
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={index}
+                  ref={rowVirtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                    paddingBottom: 2, // 替代之前的 gap: 2
+                  }}
+                >
+                  <TrackRow
+                    song={song}
+                    index={index}
+                    displayIndex={index + 1}
+                    isCurrent={current?.id === song.id}
+                    isPlaying={isPlaying}
+                    selectMode={false}
+                    selected={false}
+                    onToggleSelect={() => {}}
+                    onPlay={() => handlePlay(index)}
+                    showCover={true}
+                    renderAction={() => (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {song.format && (
+                          <span style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: 'var(--color-text-dim, rgba(255,255,255,0.65))',
+                            background: 'var(--color-hover, rgba(255,255,255,0.06))',
+                            padding: '2px 6px',
+                            borderRadius: 4,
+                            textTransform: 'uppercase',
+                            letterSpacing: 0.5,
+                          }}>
+                            {song.format}
+                          </span>
+                        )}
+                        <AddToLibraryButton song={song} />
+                      </div>
+                    )}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          
           {/* 加载更多 / 触底哨兵 */}
-          <div ref={listEndRef} style={{ height: 1 }} />
-          {loading && (
-            <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 12, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-              加载中...
-            </div>
-          )}
-          {!loading && !hasMore && songs.length > 0 && (
-            <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 12, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-              已加载全部
-            </div>
-          )}
-        </div>
+            <div ref={listEndRef} style={{ height: 1 }} />
+            {loading && (
+              <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 12, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
+                加载中...
+              </div>
+            )}
+            {!loading && !hasMore && songs.length > 0 && (
+              <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 12, color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
+                已加载全部
+              </div>
+            )}
+          </div>
+        </TrackList>
       )}
       </div>
     </div>

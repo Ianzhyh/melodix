@@ -4,11 +4,12 @@ import { usePlaybackStore } from '../../stores/playbackStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useFavoriteStore } from '../../stores/favoriteStore';
 import { useDownloadStore } from '../../stores/downloadStore';
+import { useToastStore } from '../../stores/toastStore';
 import * as api from '../../api/client';
 import { AudioEngine } from '../../services/AudioEngine';
 import { decodeQRC } from '../../utils/qrcDecoder';
 import { parseLrcTranslation, matchTranslations, isChineseLyric } from '../../utils/lyricParser';
-import type { LyricLine, Song } from '../../types/playback';
+import type { LyricLine, RouteState, Song } from '../../types/playback';
 import { extractAndApplyTheme } from '../../utils/colorExtractor';
 import { Icons, QUALITY_OPTIONS } from './Icons';
 import { CommentPanel, Comment } from './CommentPanel';
@@ -17,13 +18,14 @@ import { TrackInfo } from './TrackInfo';
 import { ProgressBar } from './ProgressBar';
 import { PlayControls } from './PlayControls';
 import { VolumeControl } from './VolumeControl';
+import { SleepTimerButton } from './SleepTimer';
 
 import { getSongCoverUrl } from '../../utils/cover';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 // 解析本地歌词：支持 QRC JSON 格式（QQ 音乐补齐后存储）和 LRC 文本格式
-function parseLocalLyrics(lyricsStr: string): LyricLine[] {
+async function parseLocalLyrics(lyricsStr: string): Promise<LyricLine[]> {
   if (!lyricsStr) return [];
 
   // 尝试解析为 QRC JSON（结构化逐字歌词）
@@ -56,7 +58,7 @@ function parseLocalLyrics(lyricsStr: string): LyricLine[] {
   return decodeQRC(lyricsStr);
 }
 
-export function PlayerBar() {
+export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => void }) {
   const {
     current,
     isPlaying,
@@ -86,11 +88,14 @@ export function PlayerBar() {
     addSongNext,
     toggleMute,
     setCurrentTime,
+    radioMode,
+    toggleRadioMode,
   } = usePlaybackStore();
 
   const sidecarPort = useConfigStore((state) => state.sidecarPort);
   const streamingQuality = useConfigStore((state) => state.streamingQuality);
   const setStreamingQuality = useConfigStore((state) => state.setStreamingQuality);
+  const enableTransparency = useConfigStore((state) => state.enableTransparency);
   const { toggleFavorite, isFavorite } = useFavoriteStore();
   const lastTrackId = useRef<string | null>(null);
   const isFirstQualityRender = useRef(true);
@@ -107,7 +112,6 @@ export function PlayerBar() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
   const qualityMenuRef = useRef<HTMLDivElement>(null);
 
   const isLightBg = bgIsLight;
@@ -146,17 +150,16 @@ export function PlayerBar() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showQualityMenu]);
 
-  // Close volume slider on outside click
+  // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）：关闭音质菜单与更多菜单
+  // （TrackInfo 的 MoreMenu state 在本组件，通过 props 下发，统一在此关闭）
   useEffect(() => {
-    if (!showVolumeSlider) return;
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.closest('.player-volume-container')) return;
-      setShowVolumeSlider(false);
+    const closePopups = () => {
+      setShowQualityMenu(false);
+      setShowMoreMenu(false);
     };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [showVolumeSlider]);
+    window.addEventListener('melodix-close-popups', closePopups);
+    return () => window.removeEventListener('melodix-close-popups', closePopups);
+  }, []);
 
   // Sync volume state to AudioEngine when it changes
   useEffect(() => {
@@ -210,7 +213,7 @@ export function PlayerBar() {
 
         // 解析并显示歌词（支持 QRC JSON 和 LRC 文本两种格式）
         try {
-          const lines = parseLocalLyrics(updated.lyrics);
+          const lines = await parseLocalLyrics(updated.lyrics);
           const isChinese = isChineseLyric(lines);
           const hasTrans = lines.some((l) => l.translation != null);
           setLyrics(lines, { isChineseLyric: isChinese, hasTranslation: hasTrans });
@@ -255,8 +258,53 @@ export function PlayerBar() {
         abortRef.current.abort();
       }
       abortRef.current = new AbortController();
+
+      // 断点续播：恢复上次的播放位置（仅消费一次；元数据未就绪时由 AudioEngine 延迟应用）
+      const applyResumeSeek = () => {
+        const st = usePlaybackStore.getState();
+        const pending = st.consumePendingSeek();
+        if (pending !== null && pending > 0) {
+          AudioEngine.seek(pending);
+          const dur = AudioEngine.getDuration() || current.duration || 0;
+          if (dur > 0) {
+            st.setProgress(pending / dur);
+            st.setCurrentTime(pending);
+          }
+        }
+      };
+
       try {
         AudioEngine.pause();
+        // 记录本轮的引擎请求序号：加载期间用户按暂停（pause() 会使序号变化）则视为被中断
+        const engineReq = AudioEngine.getPlayRequestId();
+        // 启动恢复的歌曲：只装载到暂停状态（定位进度），不自动开播
+        const st0 = usePlaybackStore.getState();
+        const isRestoreResume = st0.isRestoredSession;
+        if (isRestoreResume) st0.markSessionRestored();
+
+        // 统一的开播逻辑：恢复态或加载中被用户暂停 → 只装载不播放；
+        // 加载期间用户按的是「播放」→ 装载完接着播；否则正常开播
+        const startPlayback = (url: string) => {
+          const interrupted = AudioEngine.getPlayRequestId() !== engineReq;
+          if (interrupted || isRestoreResume) {
+            AudioEngine.prepare(url);
+            applyResumeSeek();
+            if (AudioEngine.getUserWantsPlay()) {
+              // 用户在加载期间点了播放：装载完成后继续播放
+              AudioEngine.resume().then(() => {
+                usePlaybackStore.getState().setPlaying(true);
+              }).catch(() => {});
+            }
+            return;
+          }
+          AudioEngine.play(url).then(() => {
+            setPlaying(true);
+            setPlaybackError(null);
+          }).catch(() => {
+            setPlaying(false);
+          });
+          applyResumeSeek();
+        };
 
         // 本地歌曲：跳过在线 API，直接用 convertFileSrc 转换本地文件路径播放
         if (current.isLocal && current.filePath) {
@@ -265,7 +313,7 @@ export function PlayerBar() {
           // 如果已有补齐的歌词（数据库存储的 QRC JSON 或 LRC 文本），解析并显示
           if (current.lyrics) {
             try {
-              const lines = parseLocalLyrics(current.lyrics);
+              const lines = await parseLocalLyrics(current.lyrics);
               const isChinese = isChineseLyric(lines);
               const hasTrans = lines.some((l) => l.translation != null);
               setLyrics(lines, { isChineseLyric: isChinese, hasTranslation: hasTrans });
@@ -275,7 +323,11 @@ export function PlayerBar() {
           } else {
             // 无歌词，清空状态并异步触发在线补齐（不阻塞播放）
             setLyrics([], { isChineseLyric: false, hasTranslation: false });
-            invoke('enrich_local_song', { id: parseInt(current.id) })
+            // 必须传 cookie 参数：Rust 命令签名为 enrich_local_song(db, state, app, id, cookie)，
+            // 缺参会直接以 "missing required key `cookie`" 拒绝，导致补齐永远失败。
+            // 歌词需要 QQ 音乐 Cookie，封面不需要；未登录时传空串仍可补齐封面。
+            const tencentCookie = useConfigStore.getState().cookies?.tencent || '';
+            invoke('enrich_local_song', { id: parseInt(current.id), cookie: tencentCookie })
               .then(() => {
                 console.log('本地歌曲补齐完成:', current.name);
               })
@@ -286,17 +338,12 @@ export function PlayerBar() {
           const coverUrlForTheme = getSongCoverUrl(current, 300);
           const themePromise = extractAndApplyTheme(coverUrlForTheme).catch(() => null);
 
-          AudioEngine.play(localUrl).then(() => {
-            setPlaying(true);
-            setPlaybackError(null);
-          }).catch(() => {
-            setPlaying(false);
-          });
+          startPlayback(localUrl);
 
           const themeResult = await themePromise;
           if (version !== loadVersion.current) return;
           if (themeResult) {
-            setThemeColor(themeResult.themeColor, themeResult.bgIsLight);
+            setThemeColor(themeResult.themeColor, themeResult.bgIsLight, themeResult.themeColors);
           }
           return;
         }
@@ -306,7 +353,7 @@ export function PlayerBar() {
         const urlPromise = api.getUrl(current.id, source, api.qualityToApiParam(streamingQuality), abortRef.current.signal);
 
         const lrcPromise = api.getLyric(current.id, source)
-          .catch(e => { return null; });
+          .catch(() => { return null; });
 
         let coverUrlForTheme = getSongCoverUrl(current, 300);
         const themePromise = extractAndApplyTheme(coverUrlForTheme).catch(() => null);
@@ -315,12 +362,7 @@ export function PlayerBar() {
         if (version !== loadVersion.current) return;
 
         if (urlResult.url) {
-          AudioEngine.play(urlResult.url).then(() => {
-            setPlaying(true);
-            setPlaybackError(null);
-          }).catch(e => {
-            setPlaying(false);
-          });
+          startPlayback(urlResult.url);
         } else {
           setPlaying(false);
           setPlaybackError('无法播放此歌曲，可能需要配置 QQ音乐 Cookie');
@@ -360,7 +402,7 @@ export function PlayerBar() {
             const lrcData = lrcJson.data || lrcJson;
             const lrcText = typeof lrcData === 'string' ? lrcData : (lrcData?.lyric || lrcData?.lrc || '');
             if (lrcText && lrcText !== '{}') {
-              const lines = decodeQRC(lrcText);
+              const lines = await decodeQRC(lrcText);
               matchTranslations(lines, transMap);
               const isChinese = isChineseLyric(lines);
               const hasTrans = lines.some((l) => l.translation != null);
@@ -372,7 +414,7 @@ export function PlayerBar() {
         const themeResult = await themePromise;
         if (version !== loadVersion.current) return;
         if (themeResult) {
-          setThemeColor(themeResult.themeColor, themeResult.bgIsLight);
+          setThemeColor(themeResult.themeColor, themeResult.bgIsLight, themeResult.themeColors);
         }
 
       } catch (err) {
@@ -382,6 +424,13 @@ export function PlayerBar() {
     };
 
     loadAndPlay();
+
+    return () => {
+      // Memory Optimization: abort pending requests on unmount
+      if (abortRef.current) {
+        abortRef.current.abort();
+      }
+    };
   }, [current, sidecarPort, streamingQuality, setPlaying, setLyrics, setThemeColor, setPlaybackError]);
 
   // Sync MediaSession metadata
@@ -449,7 +498,7 @@ export function PlayerBar() {
     } else {
       AudioEngine.resume().then(() => {
         setPlaying(true);
-      }).catch((err) => {
+      }).catch(() => {
       });
     }
   };
@@ -496,9 +545,15 @@ export function PlayerBar() {
     }
   };
 
-  const coverUrl = current ? getSongCoverUrl(current, 300) : '';
-
-  const songProps = current ? { name: current.name, artist: current.artist, coverUrl, id: current.id } : null;
+  // 相似歌曲电台开关：开启时预热候选缓存（腾讯首次构建较慢）
+  const handleToggleRadio = () => {
+    toggleRadioMode();
+    const nextOn = !radioMode;
+    useToastStore.getState().showToast(nextOn ? '已开启相似歌曲电台：队列播完后自动续播' : '已关闭相似歌曲电台', 'info');
+    if (nextOn && current) {
+      void api.warmRadioCache(current);
+    }
+  };
 
   return (
     <>
@@ -565,7 +620,7 @@ export function PlayerBar() {
         layout
         initial={false}
         animate={{ y: lyricsOpen && isIdle ? 88 : 0 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 35 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
         style={{
           ...(lyricsOpen ? (
             isLightBg ? {
@@ -605,11 +660,11 @@ export function PlayerBar() {
           boxShadow: lyricsOpen ? 'none' : '0 -1px 0 var(--color-border), 0 -20px 60px rgba(0,0,0,0.15)'
         } as React.CSSProperties}
       >
-        <div style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr 1fr', width: '100%', alignSelf: 'stretch', alignItems: 'center' }}>
 
           {/* Left: Track Info & Actions */}
           <TrackInfo
-            song={songProps}
+            song={current}
             isFavorited={current ? isFavorite(current.id) : false}
             onToggleFavorite={() => current && toggleFavorite(current)}
             onCoverClick={() => setLyricsOpen(true)}
@@ -620,6 +675,13 @@ export function PlayerBar() {
             onToggleMoreMenu={() => setShowMoreMenu(!showMoreMenu)}
             onCloseMoreMenu={() => setShowMoreMenu(false)}
             onAddToQueue={() => current && addSongNext(current)}
+            onOpenArtist={(id, name) => {
+              if (!current || !onNavigate) return;
+              if (!id) return;
+              onNavigate({ page: 'artist', id, source: current.source || 'tencent', name });
+            }}
+            radioMode={radioMode}
+            onToggleRadio={handleToggleRadio}
             onDownload={() => {
               if (!current) return;
               useDownloadStore.getState().addTask(current);
@@ -632,10 +694,10 @@ export function PlayerBar() {
           />
 
           {/* Center: Play Controls & Progress */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1.5, maxWidth: 600, gap: 8, position: 'relative' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', maxWidth: 600, justifySelf: 'center', gap: 8, position: 'relative' }}>
 
             {/* Top Row: Play Controls + Volume */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
               <PlayControls
                 isPlaying={isPlaying}
                 isBuffering={isBuffering}
@@ -652,16 +714,16 @@ export function PlayerBar() {
               <VolumeControl
                 volume={volume}
                 isMuted={isMuted}
-                showVolumeSlider={showVolumeSlider}
                 onVolumeChange={(val) => setVolume(val)}
                 onToggleMute={toggleMute}
-                onToggleVolumeSlider={() => setShowVolumeSlider(!showVolumeSlider)}
               />
+
+              <SleepTimerButton />
             </div>
 
             {/* Bottom Row: Progress Bar */}
             <ProgressBar
-              currentTime={currentTime}
+              currentTime={isSeeking ? seekValue * duration : currentTime}
               duration={duration}
               progress={progress}
               isSeeking={isSeeking}
@@ -703,10 +765,11 @@ export function PlayerBar() {
           </div>
 
           {/* Right: Extra Tools */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 20, flex: 1, minWidth: 0, color: 'var(--color-icon)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, color: 'var(--color-icon)' }}>
             <div ref={qualityMenuRef} className="player-quality-btn" style={{ position: 'relative' }}>
               <motion.button
                 whileHover={{ color: 'var(--color-text)' }}
+                aria-label="切换音质"
                 onClick={() => setShowQualityMenu(!showQualityMenu)}
                 style={{
                   background: showQualityMenu ? 'var(--color-surface-active)' : 'none',
@@ -727,10 +790,11 @@ export function PlayerBar() {
                     transition={{ duration: 0.15 }}
                     style={{
                       position: 'absolute', bottom: '100%', right: 0, marginBottom: 8,
-                      background: 'var(--glass-bg)',
-                      border: '1px solid var(--glass-border)',
+                      background: enableTransparency ? 'var(--acrylic-noise), var(--acrylic-tint)' : 'var(--color-bg-elevated)',
+                      border: '1px solid var(--color-border)',
                       borderRadius: 8, padding: 4, minWidth: 160,
-                      backdropFilter: 'blur(20px)',
+                      backdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
+                      WebkitBackdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
                       boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
                       zIndex: 'var(--z-modal)',
                     }}
@@ -767,14 +831,20 @@ export function PlayerBar() {
                 )}
               </AnimatePresence>
             </div>
-            <motion.button onClick={() => setLyricsOpen(!lyricsOpen)} whileHover={{ color: 'var(--color-primary, #6366f1)' }} style={{ background: 'none', border: 'none', color: lyricsOpen ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
+            <motion.button onClick={() => useUIStore.getState().toggleMiniPlayer()} whileHover={{ color: 'var(--color-primary, #6366f1)' }} aria-label="迷你播放器" style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0 }} title="迷你播放器 (Mini Player)">
+              <svg viewBox="0 0 1024 1024" width="20" height="20" xmlns="http://www.w3.org/2000/svg">
+                <path d="M469.333333 469.333333h384v298.666667h-384z" fill="currentColor"></path>
+                <path d="M938.666667 85.333333H85.333333C38.4 85.333333 0 123.733333 0 170.666667v682.666666c0 46.933333 38.4 85.333333 85.333333 85.333334h853.333334c46.933333 0 85.333333-38.4 85.333333-85.333334V170.666667c0-46.933333-38.4-85.333333-85.333333-85.333334z m-25.6 742.4H110.933333V196.266667h802.133334v631.466666z" fill="currentColor"></path>
+              </svg>
+            </motion.button>
+            <motion.button onClick={() => setLyricsOpen(!lyricsOpen)} whileHover={{ color: 'var(--color-primary, #6366f1)' }} aria-label={lyricsOpen ? '关闭歌词页' : '打开歌词页'} style={{ background: 'none', border: 'none', color: lyricsOpen ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 18V5l12-2v13" />
                 <circle cx="6" cy="18" r="3" />
                 <circle cx="18" cy="16" r="3" />
               </svg>
             </motion.button>
-            <motion.button onClick={() => useUIStore.getState().togglePanel('queue')} whileHover={{ color: 'var(--color-text)' }} style={{ background: 'none', border: 'none', color: activePanel === 'queue' ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
+            <motion.button onClick={() => useUIStore.getState().togglePanel('queue')} whileHover={{ color: 'var(--color-text)' }} aria-label={activePanel === 'queue' ? '关闭播放队列' : '打开播放队列'} style={{ background: 'none', border: 'none', color: activePanel === 'queue' ? 'var(--color-primary, #6366f1)' : 'inherit', cursor: 'pointer', padding: 0 }}>
               {Icons.queue}
             </motion.button>
           </div>

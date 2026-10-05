@@ -33,11 +33,18 @@ const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
 
-const QRCodeCore = require('./lib/qrcode/lib/core/qrcode');
+// 懒加载 QRCode 核心模块（仅在扫码登录路由首次调用时加载，降低非登录场景内存占用）
+let QRCodeCore = null;
+function getQRCodeCore() {
+  if (!QRCodeCore) {
+    QRCodeCore = require('./lib/qrcode/lib/core/qrcode');
+  }
+  return QRCodeCore;
+}
 
 function generateQRMatrix(text) {
   try {
-    const qrData = QRCodeCore.create(text, { errorCorrectionLevel: 'L' });
+    const qrData = getQRCodeCore().create(text, { errorCorrectionLevel: 'L' });
     const modules = qrData.modules;
     const size = modules.size;
     const rows = [];
@@ -112,6 +119,67 @@ function safeJSONParse(str) {
   } catch {
     return str;
   }
+}
+
+// ============================================
+// 网易云 eapi 加密（与官方客户端一致，可拿到完整专辑/歌手/搜索原始字段）
+// ============================================
+const EAPI_KEY = 'e82ckenh8dichen8';
+
+function md5(str) {
+  return crypto.createHash('md5').update(str).digest('hex');
+}
+
+// pathname 形如 /api/v1/album/123；返回 { url, body }
+function neteaseEapiEncrypt(pathname, bodyObj) {
+  const body = JSON.stringify(bodyObj);
+  const a = `nobody${pathname}use${body}md5forencrypt`;
+  const o = `${pathname}-36cd479b6b5-${body}-36cd479b6b5-${md5(a)}`;
+  const cipher = crypto.createCipheriv('aes-128-ecb', Buffer.from(EAPI_KEY, 'utf8'), null);
+  cipher.setAutoPadding(true);
+  let enc = cipher.update(o, 'utf8', 'hex');
+  enc += cipher.final('hex');
+  return {
+    url: `https://music.163.com${pathname.replace('/api/', '/eapi/')}`,
+    body: `params=${enc.toUpperCase()}`,
+  };
+}
+
+function getNeteaseHeaders(req) {
+  const userCookie = getPlatformCookie(req, 'netease') || '';
+  return {
+    'Referer': 'music.163.com',
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 11; M2007J3SC Build/RKQ1.200826.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/77.0.3865.120 MQQBrowser/6.2 TBS/045714 Mobile Safari/537.36 NeteaseMusic/8.7.01',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Cookie': `osver=android; appver=8.7.01; os=android; channel=netease; __remember_me=true;${userCookie ? ' ' + userCookie : ''}`,
+  };
+}
+
+async function neteaseEapiRequest(req, pathname, bodyObj) {
+  const { url: apiUrl, body } = neteaseEapiEncrypt(pathname, bodyObj);
+  const text = await withTimeout(httpsPost(apiUrl, body, getNeteaseHeaders(req)));
+  return JSON.parse(text);
+}
+
+// 网易云歌曲原始字段 → 与腾讯端统一的前端字段
+function normalizeNeteaseSong(item) {
+  const al = item.al || item.album || {};
+  const ar = item.ar || item.artists || [];
+  return {
+    id: String(item.id),
+    songid: String(item.id),
+    name: item.name || '',
+    artist: ar.map(a => a.name).join(', '),
+    album: al.name || '',
+    album_id: al.id != null ? String(al.id) : '',
+    singer: ar.map(a => ({ id: a.id != null ? String(a.id) : '', name: a.name || '' })),
+    pic_id: (typeof al.pic_str === 'string' && al.pic_str) || '',
+    cover: al.picUrl || '',
+    url_id: String(item.id),
+    lyric_id: String(item.id),
+    source: 'netease',
+    duration: Math.round((item.dt || item.duration || 0) / 1000),
+  };
 }
 
 // ============================================
@@ -294,15 +362,6 @@ async function withTimeout(promise, ms = CONFIG.timeout) {
   }
 }
 
-// 安全解析 JSON
-function safeJSONParse(str) {
-  try {
-    return JSON.parse(str);
-  } catch {
-    return str;
-  }
-}
-
 // ============================================
 // 🎯 API 路由处理器
 // ============================================
@@ -355,7 +414,7 @@ async function handleSearch(req, res, query) {
     const platformCookie = getPlatformCookie(req, platform);
     if (platformCookie) m.cookie(platformCookie);
 
-    const rawResult = await withTimeout(m.search(decodeURIComponent(keyword), {
+    const rawResult = await withTimeout(m.search(keyword, {
       type: parseInt(type),
       page: parseInt(page),
       limit: Math.min(parseInt(limit), 50),
@@ -365,7 +424,7 @@ async function handleSearch(req, res, query) {
     const resultCount = Array.isArray(data) ? data.length : (data?.data?.length || 0);
 
     jsonResponse(res, 200, {
-      success: true, platform, keyword: decodeURIComponent(keyword),
+      success: true, platform, keyword: keyword,
       page: parseInt(page), count: resultCount,
       data: Array.isArray(data) ? data : (data?.data || data || []),
       timestamp: new Date().toISOString(),
@@ -397,9 +456,8 @@ async function handleUrl(req, res, query) {
       response = { url: data };
     } else if (data && data.url) {
       response = data;
-      if (!data.url) {
-        return errorResponse(res, 403, 'Empty URL — the song may require VIP or login', data);
-      }
+    } else if (data) {
+      return errorResponse(res, 403, 'Empty URL — the song may require VIP or login', data);
     } else {
       response = { url: null, raw: data };
     }
@@ -439,6 +497,92 @@ async function handleLyric(req, res, query) {
   }
 }
 
+// 图片代理流式转发：使用原生 http/https 模块 pipe 转发，零缓冲，降低内存峰值
+// 支持自动跟随重定向（图片 URL 常重定向到 CDN），最多 8 次
+// 连接阶段失败 → reject（调用方可 fallback）；传输阶段失败 → 结束响应
+function pipeImageProxy(targetUrl, res, extraHeaders = {}, maxRedirects = 8) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(targetUrl); } catch (e) { return reject(new Error('Invalid URL')); }
+    const lib = u.protocol === 'https:' ? https : http;
+    const opts = {
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/*,*/*;q=0.8',
+        ...extraHeaders,
+      },
+      timeout: 15000,
+    };
+    const upstreamReq = lib.request(opts, (upstreamRes) => {
+      // 跟随重定向
+      if ([301, 302, 303, 307, 308].includes(upstreamRes.statusCode) && upstreamRes.headers.location) {
+        if (maxRedirects <= 0) {
+          upstreamRes.resume();
+          return reject(new Error('Too many redirects'));
+        }
+        let nextUrl = upstreamRes.headers.location;
+        if (!nextUrl.startsWith('http')) {
+          if (nextUrl.startsWith('//')) {
+            nextUrl = `${u.protocol}${nextUrl}`;
+          } else {
+            nextUrl = `${u.protocol}//${u.host}${nextUrl}`;
+          }
+        }
+        upstreamRes.resume();
+        return resolve(pipeImageProxy(nextUrl, res, extraHeaders, maxRedirects - 1));
+      }
+
+      if (upstreamRes.statusCode !== 200) {
+        upstreamRes.resume();
+        return reject(new Error(`Upstream returned status ${upstreamRes.statusCode}`));
+      }
+
+      const contentType = upstreamRes.headers['content-type'] || 'image/jpeg';
+      setCORSHeaders(res);
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.writeHead(200);
+
+      // 流式转发：upstreamRes → res，不缓冲完整图片到内存
+      upstreamRes.pipe(res);
+
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+
+      upstreamRes.on('end', done);
+      upstreamRes.on('error', (err) => {
+        console.warn('[PipeImageProxy] upstream stream error:', err.message);
+        try { res.destroy(); } catch (_) {}
+        done();
+      });
+      res.on('error', (err) => {
+        console.warn('[PipeImageProxy] client stream error:', err.message);
+        upstreamRes.destroy();
+        done();
+      });
+    });
+
+    upstreamReq.on('error', (err) => {
+      if (!res.headersSent) {
+        reject(err);
+      } else {
+        try { res.destroy(); } catch (_) {}
+        resolve();
+      }
+    });
+
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy(new Error('Upstream request timeout'));
+    });
+
+    upstreamReq.end();
+  });
+}
+
 // GET /pic — 获取封面图片（代理模式，解决 CORS 问题）
 async function handlePic(req, res, query) {
   const { server: platform, id: picId, size = '300', proxy = 'true' } = query;
@@ -446,7 +590,7 @@ async function handlePic(req, res, query) {
 
   try {
     const m = await createMetingInstance(platform);
-    
+
     const platformCookie = getPlatformCookie(req, platform);
     if (platformCookie) m.cookie(platformCookie);
 
@@ -460,20 +604,11 @@ async function handlePic(req, res, query) {
 
     if (proxy !== 'false') {
       try {
-        let fetch;
-        try { fetch = (await import('node-fetch')).default; } catch(_) {}
-        const picRes = await fetch(finalUrl, { timeout: 10000 });
-        const buffer = await picRes.buffer();
-        const contentType = picRes.headers.get('content-type') || 'image/jpeg';
-        
-        setCORSHeaders(res);
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-        res.writeHead(200);
-        res.end(buffer);
+        await pipeImageProxy(finalUrl, res);
         return;
       } catch (proxyErr) {
         console.warn(`[Pic Proxy Error] ${proxyErr.message}, fallback to redirect`);
+        if (res.headersSent) return;
       }
     }
 
@@ -493,18 +628,133 @@ async function handleProxyImage(req, res, query) {
     return errorResponse(res, 400, 'Missing or invalid url parameter');
   }
   try {
-    const picRes = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
-    if (!picRes.ok) return errorResponse(res, picRes.status, 'Upstream fetch failed');
-    const buffer = Buffer.from(await picRes.arrayBuffer());
-    setCORSHeaders(res);
-    res.setHeader('Content-Type', picRes.headers.get('content-type') || 'image/jpeg');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.writeHead(200);
-    res.end(buffer);
+    await pipeImageProxy(imageUrl, res);
   } catch (e) {
     console.warn('[ProxyImage Error]', e.message);
-    errorResponse(res, 502, 'Proxy fetch error', e.message);
+    if (!res.headersSent) {
+      errorResponse(res, 502, 'Proxy fetch error', e.message);
+    }
   }
+}
+
+// GET /proxy-audio — 通用音频代理（解决 Web Audio API 的 CORS 污染问题）
+// 使用 pipeAudioProxy：透传 Range 头并转发 206 分段响应。
+// 若像图片代理那样吞掉 Range、总是回传从字节 0 开始的 200 完整流，
+// <audio> 拖进度条时浏览器会把 currentTime 重置回 0（表现为"从头播放"）。
+async function handleProxyAudio(req, res, query) {
+  const { url: audioUrl } = query;
+  if (!audioUrl || !(audioUrl.startsWith('http://') || audioUrl.startsWith('https://'))) {
+    return errorResponse(res, 400, 'Missing or invalid url parameter');
+  }
+  try {
+    await pipeAudioProxy(audioUrl, req, res, { 'Accept': 'audio/*,*/*;q=0.8' });
+  } catch (e) {
+    console.warn('[ProxyAudio Error]', e.message);
+    if (!res.headersSent) {
+      errorResponse(res, 502, 'Proxy fetch error', e.message);
+    }
+  }
+}
+
+// 音频代理流式转发：Range 感知。
+// - 透传客户端 Range 头（拖进度条定位依赖它），重定向时同样保留；
+// - 接受 200 / 206 / 416，透传 Content-Range / Content-Length / Accept-Ranges；
+// - 连接阶段失败 → reject（调用方可报 502）；传输阶段失败 → 结束响应。
+function pipeAudioProxy(targetUrl, clientReq, res, extraHeaders = {}, maxRedirects = 8) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(targetUrl); } catch (e) { return reject(new Error('Invalid URL')); }
+    const lib = u.protocol === 'https:' ? https : http;
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'audio/*,*/*;q=0.8',
+      ...extraHeaders,
+    };
+    // 关键：透传客户端的 Range 头（例如 bytes=1048576-），否则分段定位失效
+    const range = clientReq && clientReq.headers && clientReq.headers.range;
+    if (range) headers['Range'] = range;
+
+    const opts = {
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers,
+      timeout: 30000,
+    };
+
+    const upstreamReq = lib.request(opts, (upstreamRes) => {
+      // 跟随重定向（保留 Range 头重新请求）
+      if ([301, 302, 303, 307, 308].includes(upstreamRes.statusCode) && upstreamRes.headers.location) {
+        if (maxRedirects <= 0) {
+          upstreamRes.resume();
+          return reject(new Error('Too many redirects'));
+        }
+        let nextUrl = upstreamRes.headers.location;
+        if (!nextUrl.startsWith('http')) {
+          if (nextUrl.startsWith('//')) {
+            nextUrl = `${u.protocol}${nextUrl}`;
+          } else {
+            nextUrl = `${u.protocol}//${u.host}${nextUrl}`;
+          }
+        }
+        upstreamRes.resume();
+        return resolve(pipeAudioProxy(nextUrl, clientReq, res, extraHeaders, maxRedirects - 1));
+      }
+
+      // 200 = 完整流；206 = Range 命中；416 = Range 越界（交给浏览器自行处理）
+      if (![200, 206, 416].includes(upstreamRes.statusCode)) {
+        upstreamRes.resume();
+        return reject(new Error(`Upstream returned status ${upstreamRes.statusCode}`));
+      }
+
+      const contentType = upstreamRes.headers['content-type'] || 'audio/mpeg';
+      setCORSHeaders(res);
+      res.setHeader('Content-Type', contentType);
+      if (upstreamRes.headers['content-range']) {
+        res.setHeader('Content-Range', upstreamRes.headers['content-range']);
+      }
+      if (upstreamRes.headers['content-length']) {
+        res.setHeader('Content-Length', upstreamRes.headers['content-length']);
+      }
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+      res.writeHead(upstreamRes.statusCode);
+
+      // 流式转发：upstreamRes → res
+      upstreamRes.pipe(res);
+
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+
+      upstreamRes.on('end', done);
+      upstreamRes.on('error', (err) => {
+        console.warn('[PipeAudioProxy] upstream stream error:', err.message);
+        try { res.destroy(); } catch (_) {}
+        done();
+      });
+      res.on('error', (err) => {
+        console.warn('[PipeAudioProxy] client stream error:', err.message);
+        upstreamRes.destroy();
+        done();
+      });
+    });
+
+    upstreamReq.on('error', (err) => {
+      if (!res.headersSent) {
+        reject(err);
+      } else {
+        try { res.destroy(); } catch (_) {}
+        resolve();
+      }
+    });
+
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy(new Error('Upstream request timeout'));
+    });
+
+    upstreamReq.end();
+  });
 }
 
 // GET /song — 获取歌曲详情
@@ -601,7 +851,7 @@ async function handleAggregateSearch(req, res, query) {
   const limit = parseInt(query.limit) || 30;
   if (!keyword) return errorResponse(res, 400, 'Missing keyword');
   
-  const decodedKeyword = decodeURIComponent(keyword);
+  const decodedKeyword = keyword;
   const platforms = ['tencent', 'kugou', 'kuwo', 'netease'];
   
   console.log(`[AGGREGATE] 聚合搜索 "${decodedKeyword}" → ${platforms.join(', ')} + migu + bilibili`);
@@ -610,7 +860,7 @@ async function handleAggregateSearch(req, res, query) {
   const tasks = platforms.map(async (platform) => {
     try {
       const m = await createMetingInstance(platform);
-      const rawResult = await withTimeout(m.search(decodedKeyword, { page: 1, limit: Math.min(limit, 50) }), 8000);
+      const rawResult = await withTimeout(m.search(decodedKeyword, { page, limit: Math.min(limit, 50) }), 8000);
       const data = safeJSONParse(rawResult);
       const list = Array.isArray(data) ? data : (data?.data || data || []);
       return (list || []).map(item => ({ ...item, _source: platform }));
@@ -627,7 +877,7 @@ async function handleAggregateSearch(req, res, query) {
       const deviceId = '963B7AA0D21511ED807EE5846EC87D20';
       const signStr = `${decodedKeyword}6cdc72a439cef99a3418d2a78aa28c73yyapp2d16148780a1dcc7408e06336b98cfd50${deviceId}${time}`;
       const sign = crypto.createHash('md5').update(signStr).digest('hex');
-      const apiUrl = `https://jadeite.migu.cn/music_search/v3/search/searchAll?isCorrect=0&isCopyright=1&searchSwitch=%7B%22song%22%3A1%2C%22album%22%3A0%2C%22singer%22%3A0%2C%22tagSong%22%3A1%2C%22mvSong%22%3A0%2C%22bestShow%22%3A1%2C%22songlist%22%3A0%2C%22lyricSong%22%3A0%7D&pageSize=${Math.min(limit, 50)}&text=${encodeURIComponent(decodedKeyword)}&pageNo=1&sort=0&sid=USS`;
+      const apiUrl = `https://jadeite.migu.cn/music_search/v3/search/searchAll?isCorrect=0&isCopyright=1&searchSwitch=%7B%22song%22%3A1%2C%22album%22%3A0%2C%22singer%22%3A0%2C%22tagSong%22%3A1%2C%22mvSong%22%3A0%2C%22bestShow%22%3A1%2C%22songlist%22%3A0%2C%22lyricSong%22%3A0%7D&pageSize=${Math.min(limit, 50)}&text=${encodeURIComponent(decodedKeyword)}&pageNo=${page}&sort=0&sid=USS`;
       const result = await withTimeout(httpsGet(apiUrl, {
         'User-Agent': 'Mozilla/5.0 (Linux; U; Android 11; zh-cn; MI 11) AppleWebKit/534.30',
         'uiVersion': 'A_music_3.6.1', 'deviceId': deviceId,
@@ -660,26 +910,29 @@ async function handleAggregateSearch(req, res, query) {
   // Bilibili 搜索
   tasks.push((async () => {
     try {
-      return await handleBilibiliSearchInternal(decodedKeyword, limit);
+      return await handleBilibiliSearchInternal(decodedKeyword, limit, page);
     } catch { return []; }
   })());
   
   const allPlatforms = [...platforms, 'migu', 'bilibili'];
   const results = await Promise.all(tasks);
   
-  // 2. CeruMusic 风格轮转交错合并
-  const lists = results.filter(arr => arr && arr.length > 0);
-  const interleaved = interleave(lists);
+  // 2. CeruMusic 风格轮转交错合并（过滤空结果前先与平台名配对，避免索引错位）
+  const pairs = [];
+  results.forEach((arr, i) => {
+    if (arr && arr.length > 0) pairs.push({ platform: allPlatforms[i] || 'unknown', list: arr });
+  });
+  const interleaved = interleave(pairs.map(p => p.list));
 
   // 3. 智能去重（歌名+歌手相似度）
   const deduped = deduplicate(interleaved);
 
-  console.log(`[AGGREGATE] 结果: ${lists.length} 个平台返回数据, 合并 ${interleaved.length} → 去重后 ${deduped.length} 首`);
+  console.log(`[AGGREGATE] 结果: ${pairs.length} 个平台返回数据, 合并 ${interleaved.length} → 去重后 ${deduped.length} 首`);
 
   jsonResponse(res, 200, {
     success: true, platform: 'aggregate', keyword: decodedKeyword, page,
-    sources: lists.map((_, i) => allPlatforms[i] || 'unknown'),
-    sourceCounts: lists.map(arr => arr.length),
+    sources: pairs.map(p => p.platform),
+    sourceCounts: pairs.map(p => p.list.length),
     count: deduped.length, data: deduped,
     timestamp: new Date().toISOString(),
   });
@@ -714,8 +967,8 @@ function deduplicate(list) {
 }
 
 // ============================================
-async function handleBilibiliSearchInternal(decodedKeyword, limit) {
-  const apiUrl = `https://api.bilibili.com/audio/music-service-c/s?search_type=music&page=1&pagesize=${Math.min(limit, 50)}&keyword=${encodeURIComponent(decodedKeyword)}`;
+async function handleBilibiliSearchInternal(decodedKeyword, limit, page = 1) {
+  const apiUrl = `https://api.bilibili.com/audio/music-service-c/s?search_type=music&page=${page}&pagesize=${Math.min(limit, 50)}&keyword=${encodeURIComponent(decodedKeyword)}`;
   const result = await httpsGet(apiUrl, {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Referer': 'https://www.bilibili.com/',
@@ -745,10 +998,10 @@ async function handleBilibiliSearch(req, res, query) {
   const pagesize = Math.min(parseInt(query.pagesize) || 30, 50);
   if (!keyword) return errorResponse(res, 400, 'Missing keyword');
 
-  const decoded = decodeURIComponent(keyword);
+  const decoded = keyword;
 
   try {
-    const list = await handleBilibiliSearchInternal(decoded, pagesize);
+    const list = await handleBilibiliSearchInternal(decoded, pagesize, page);
     jsonResponse(res, 200, {
       success: true,
       platform: 'bilibili',
@@ -794,7 +1047,7 @@ async function handleMiguSearch(req, res, query) {
   const limit = Math.min(parseInt(query.limit) || 20, 50);
   if (!keyword) return errorResponse(res, 400, 'Missing keyword');
 
-  const decoded = decodeURIComponent(keyword);
+  const decoded = keyword;
   const time = Date.now().toString();
   const deviceId = '963B7AA0D21511ED807EE5846EC87D20';
   const signStr = `${decoded}6cdc72a439cef99a3418d2a78aa28c73yyapp2d16148780a1dcc7408e06336b98cfd50${deviceId}${time}`;
@@ -1993,16 +2246,16 @@ async function handleKugouQRCheck(req, res, query) {
     if (status === 4) console.log('[Kugou/QR] 4 FULL:', JSON.stringify(data.data).slice(0, 300));
     if (status === 0) console.warn('[Kugou/QR] expired! error_code=', errorCode, '| keys:', Object.keys(data.data||{}));
 
-    if (status === 4 && !data.data?.token) {
-      console.warn('[Kugou/QR] status=4 but no token! data keys:', Object.keys(data.data||{}));
-    }
-
     const response = {
       success: true,
       data: data.data || data,
       rawStatus: data.status,
     };
     if (data.data?.status === 4) {
+      if (!data.data?.token || !data.data?.userid) {
+        console.warn('[Kugou/QR] status=4 but token/userid missing! data keys:', Object.keys(data.data||{}));
+        return errorResponse(res, 502, '酷狗扫码登录异常：status=4 但未返回 token/userid', data);
+      }
       response.cookie = `token=${data.data.token}; userid=${data.data.userid}`;
     }
     jsonResponse(res, 200, response);
@@ -2020,6 +2273,14 @@ function serveStatic(res, urlPath) {
   let filePath = path.join(STATIC_ROOT, urlPath);
 
   if (urlPath === '/') filePath = path.join(STATIC_ROOT, 'index.html');
+
+  // 路径遍历防护：resolve 后必须仍在 STATIC_ROOT 内（含边界），否则 403
+  const resolvedPath = path.resolve(filePath);
+  const resolvedRoot = path.resolve(STATIC_ROOT);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) {
+    return errorResponse(res, 403, 'Forbidden: ' + urlPath);
+  }
+
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     return errorResponse(res, 404, 'Not Found: ' + urlPath);
   }
@@ -2086,23 +2347,65 @@ function handleCookieSave(req, res) {
 }
 
 // GET /tencent/search — QQ音乐直接搜索（绕过 Meting）
+// t 参数：0/缺省=单曲，9=歌手，8=专辑（client_search_cp 类型码）
 async function handleTencentSearch(req, res, query) {
   const { id: keyword, page = '1', limit = '30' } = query;
+  const t = parseInt(query.t || '0', 10);
   if (!keyword) return errorResponse(res, 400, 'Missing keyword');
 
   const cookie = getPlatformCookie(req, 'tencent') || '';
+  const baseHeaders = {
+    'Referer': 'https://y.qq.com',
+    'Cookie': cookie,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
 
   try {
     const p = parseInt(page);
     const n = Math.min(parseInt(limit), 50);
-    // Use QQ Music search API directly (no Cookie required for search)
+
+    // 歌手搜索
+    if (t === 9) {
+      const searchUrl = `https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=${p}&n=${n}&w=${encodeURIComponent(keyword)}&format=json&t=9`;
+      const result = await httpsGet(searchUrl, baseHeaders);
+      const data = JSON.parse(result);
+      const list = data?.data?.singer?.list || [];
+      const singers = list.map(s => ({
+        id: s.singerMID || s.singer_mid || '',
+        name: s.singerName || s.singer_name || '',
+        pic: s.singerMID ? `https://y.gtimg.cn/music/photo_new/T001R300x300M000${s.singerMID}.jpg` : (s.singerPic || ''),
+        songCount: s.songNum || s.song_num || 0,
+        albumCount: s.albumNum || s.album_num || 0,
+      })).filter(s => s.id);
+      return jsonResponse(res, 200, {
+        success: true, platform: 'tencent', keyword, page: p, count: singers.length, data: singers, timestamp: new Date().toISOString(),
+      });
+    }
+
+    // 专辑搜索
+    if (t === 8) {
+      const searchUrl = `https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=${p}&n=${n}&w=${encodeURIComponent(keyword)}&format=json&t=8`;
+      const result = await httpsGet(searchUrl, baseHeaders);
+      const data = JSON.parse(result);
+      const list = data?.data?.album?.list || [];
+      const albums = list.map(a => ({
+        id: a.albumMID || a.album_mid || '',
+        name: a.albumName || a.album_name || '',
+        cover: a.albumMID ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${a.albumMID}.jpg` : (a.albumPic || ''),
+        artist: a.singerName || a.singer_name || '',
+        artistId: a.singerMID || a.singer_mid || '',
+        date: a.publicTime || a.public_time || '',
+        songCount: a.song_count || 0,
+      })).filter(a => a.id);
+      return jsonResponse(res, 200, {
+        success: true, platform: 'tencent', keyword, page: p, count: albums.length, data: albums, timestamp: new Date().toISOString(),
+      });
+    }
+
+    // 单曲（默认，沿用 search_for_qq_cp）
     const searchUrl = `https://c.y.qq.com/soso/fcgi-bin/search_for_qq_cp?p=${p}&n=${n}&w=${encodeURIComponent(keyword)}&format=json`;
     
-    const result = await httpsGet(searchUrl, {
-      'Referer': 'https://y.qq.com',
-      'Cookie': cookie,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    });
+    const result = await httpsGet(searchUrl, baseHeaders);
     
     const data = JSON.parse(result);
     const songList = data?.data?.song?.list || [];
@@ -2112,6 +2415,8 @@ async function handleTencentSearch(req, res, query) {
       name: item.songname || item.name,
       artist: (item.singer || []).map(s => s.name).join(', '),
       album: item.albumname || '',
+      album_id: item.albummid || '',
+      singer: (item.singer || []).map(s => ({ id: s.mid || (s.id != null ? String(s.id) : ''), name: s.name || '' })),
       pic_id: item.albummid || item.songmid,
       url_id: item.songmid || item.media_mid,
       lyric_id: item.songmid || item.media_mid,
@@ -2122,7 +2427,7 @@ async function handleTencentSearch(req, res, query) {
     jsonResponse(res, 200, {
       success: true,
       platform: 'tencent',
-      keyword: decodeURIComponent(keyword),
+      keyword: keyword,
       page: p,
       count: songs.length,
       data: songs,
@@ -2264,6 +2569,8 @@ async function handleTencentNewSongs(req, res, query) {
         name: data.songname || data.title || '',
         artist: (data.singer || []).map(s => s.name).join(', '),
         album: data.albumname || data.album?.name || '',
+        album_id: data.albummid || data.album?.mid || '',
+        singer: (data.singer || []).map(s => ({ id: s.mid || (s.id != null ? String(s.id) : ''), name: s.name || '' })),
         pic_id: data.albummid || data.album?.mid || data.songmid || '',
         url_id: data.songmid || data.mid || '',
         lyric_id: data.songmid || data.mid || '',
@@ -2317,6 +2624,8 @@ async function handleTencentPlaylist(req, res, query) {
       name: item.songname || '',
       artist: (item.singer || []).map(s => s.name).join(', '),
       album: item.albumname || '',
+      album_id: item.albummid || '',
+      singer: (item.singer || []).map(s => ({ id: s.mid || (s.id != null ? String(s.id) : ''), name: s.name || '' })),
       pic_id: item.albummid || '',
       url_id: item.songmid || '',
       lyric_id: item.songmid || '',
@@ -2341,6 +2650,578 @@ async function handleTencentPlaylist(req, res, query) {
   } catch (err) {
     console.error('[Tencent Playlist Error]:', err.message);
     errorResponse(res, 502, 'Tencent playlist detail failed', err.message);
+  }
+}
+
+// 腾讯歌曲原始字段 → 与前端统一的结构
+function normalizeTencentSong(item, fallbackAlbum = {}) {
+  const singer = item.singer || fallbackAlbum.singer || [];
+  const albumObj = (item.album && typeof item.album === 'object') ? item.album : null;
+  const albummid = item.albummid || (albumObj && (albumObj.mid || albumObj.id)) || fallbackAlbum.albummid || '';
+  const albumname = item.albumname || (albumObj && albumObj.name) || fallbackAlbum.albumname || fallbackAlbum.name || '';
+  return {
+    id: item.songmid || item.mid || item.media_mid || '',
+    songid: String(item.songid || item.id || ''),
+    name: item.songname || item.name || item.title || '',
+    artist: singer.map(s => s.name).join(', '),
+    album: albumname,
+    album_id: String(albummid),
+    singer: singer.map(s => ({ id: s.mid || (s.id != null ? String(s.id) : ''), name: s.name || '' })),
+    pic_id: String(albummid || item.songmid || ''),
+    url_id: item.songmid || item.mid || item.media_mid || '',
+    lyric_id: item.songmid || item.mid || item.media_mid || '',
+    source: 'tencent',
+    duration: item.interval || 0,
+  };
+}
+
+// 有限并发执行异步任务（用于批量拉取专辑详情）
+async function runWithConcurrency(items, limit, fn) {
+  let idx = 0;
+  async function worker() {
+    while (true) {
+      const i = idx++;
+      if (i >= items.length) return;
+      await fn(items[i], i);
+    }
+  }
+  const workers = [];
+  for (let w = 0; w < Math.min(limit, items.length); w++) workers.push(worker());
+  await Promise.all(workers);
+}
+
+// 歌手全量歌曲缓存：首次请求构建（遍历全部专辑），15 分钟内复用
+const artistSongCache = new Map();    // key → { songs, builtAt }
+const artistSongInflight = new Map(); // key → Promise（防并发重复构建）
+const ARTIST_SONG_CACHE_TTL = 15 * 60 * 1000;
+
+// 构建腾讯歌手歌曲列表：
+//   1) 专辑列表按热度排序（order=listen），同时兜底歌手名；
+//   2) 热门歌曲打头：按歌手名搜索多页（soso 相关性≈热度），歌手 mid 精确过滤；
+//   3) 全量曲库兜底：逐个展开热度专辑的歌曲，songmid 去重后接在热门歌曲后面
+async function buildTencentArtistSongs(singermid, singerName, baseHeaders) {
+  // 1) 全部专辑列表（按热度排序）
+  const albums = [];
+  let resolvedName = singerName || '';
+  for (let begin = 0; begin < 300; begin += 30) {
+    const albumUrl = `https://c.y.qq.com/v8/fcg-bin/fcg_v8_singer_album.fcg?singermid=${encodeURIComponent(singermid)}&order=listen&begin=${begin}&num=30&exstatus=1&format=json`;
+    const albumResult = await httpsGet(albumUrl, baseHeaders);
+    const albumJson = JSON.parse(albumResult);
+    const list = (albumJson.data && albumJson.data.list) || [];
+    if (!resolvedName && albumJson.data && albumJson.data.singer_name) {
+      resolvedName = albumJson.data.singer_name;
+    }
+    albums.push(...list);
+    if (list.length < 30) break;
+  }
+
+  const songs = [];
+  const seen = new Set();
+
+  // 2) 热门歌曲打头
+  if (resolvedName) {
+    for (let p = 1; p <= 5; p++) {
+      try {
+        const searchUrl = `https://c.y.qq.com/soso/fcgi-bin/search_for_qq_cp?p=${p}&n=30&w=${encodeURIComponent(resolvedName)}&format=json`;
+        const searchResult = await httpsGet(searchUrl, baseHeaders);
+        const searchJson = JSON.parse(searchResult);
+        const songList = searchJson?.data?.song?.list || [];
+        if (songList.length === 0) break;
+        for (const item of songList) {
+          const matches = (item.singer || []).some((s) => s.mid === singermid);
+          if (!matches) continue;
+          const key = item.songmid || item.media_mid || '';
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          songs.push(normalizeTencentSong(item));
+        }
+      } catch (e) {
+        console.warn(`[Tencent ArtistSongs] 热门搜索第 ${p} 页失败（忽略）:`, e.message);
+        break;
+      }
+    }
+  }
+
+  // 3) 全量曲库兜底
+  await runWithConcurrency(albums, 8, async (album) => {
+    const mid = album.albumMID || album.album_mid || '';
+    if (!mid) return;
+    try {
+      const detailUrl = `https://c.y.qq.com/v8/fcg-bin/fcg_v8_album_detail_cp.fcg?albummid=${encodeURIComponent(mid)}&platform=yqq&format=json&newsong=1&loginUin=0&hostUin=0&needNewCode=0`;
+      const detailResult = await httpsGet(detailUrl, baseHeaders);
+      const detailJson = JSON.parse(detailResult);
+      const list = (detailJson.data && (detailJson.data.getSongInfo || detailJson.data.list)) || [];
+      for (const item of list) {
+        const key = item.mid || item.songmid || '';
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        songs.push(normalizeTencentSong(item));
+      }
+    } catch (e) {
+      console.warn('[Tencent ArtistSongs] 专辑详情获取失败（忽略）:', mid, e.message);
+    }
+  });
+
+  return songs;
+}
+
+async function getOrBuildTencentArtistSongs(singermid, singerName, baseHeaders) {
+  const key = `tencent:${singermid}`;
+  const cached = artistSongCache.get(key);
+  if (cached && Date.now() - cached.builtAt < ARTIST_SONG_CACHE_TTL) return cached.songs;
+  if (artistSongInflight.has(key)) return artistSongInflight.get(key);
+  const promise = (async () => {
+    const songs = await buildTencentArtistSongs(singermid, singerName, baseHeaders);
+    artistSongCache.set(key, { songs, builtAt: Date.now() });
+    artistSongInflight.delete(key);
+    return songs;
+  })();
+  artistSongInflight.set(key, promise);
+  return promise;
+}
+
+// GET /tencent/album — QQ音乐专辑详情（直连官方接口）
+async function handleTencentAlbum(req, res, query) {
+  const albummid = query.id || query.albummid || '';
+  if (!albummid) return errorResponse(res, 400, 'Missing album id (albummid)');
+  const cookie = getPlatformCookie(req, 'tencent') || '';
+
+  try {
+    const apiUrl = `https://c.y.qq.com/v8/fcg-bin/fcg_v8_album_detail_cp.fcg?albummid=${encodeURIComponent(albummid)}&platform=yqq&format=json&newsong=1&loginUin=0&hostUin=0&needNewCode=0`;
+    const result = await httpsGet(apiUrl, {
+      'Referer': 'https://y.qq.com',
+      'Cookie': cookie,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    });
+    const json = JSON.parse(result);
+    const d = json.data || {};
+    if (json.code !== 0 || (!Array.isArray(d.list) && !Array.isArray(d.getSongInfo))) {
+      return errorResponse(res, 404, 'Tencent album not found', JSON.stringify(json).slice(0, 200));
+    }
+    const songList = Array.isArray(d.getSongInfo) && d.getSongInfo.length > 0 ? d.getSongInfo : (d.list || []);
+    const songs = songList.map(item => normalizeTencentSong(item));
+    // 元信息：官方接口返回 getAlbumInfo / getAlbumDesc / getCompanyInfo 子对象
+    const albumInfo = (d.getAlbumInfo && typeof d.getAlbumInfo === 'object') ? d.getAlbumInfo : {};
+    const companyInfo = (d.getCompanyInfo && typeof d.getCompanyInfo === 'object') ? d.getCompanyInfo
+      : ((d.company && typeof d.company === 'object') ? d.company : null);
+    const firstSinger = (songs[0] && songs[0].singer && songs[0].singer[0]) || null;
+
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'tencent',
+      data: {
+        id: albummid,
+        name: albumInfo.Falbum_name || (songs[0] && songs[0].album) || '',
+        cover: `https://y.gtimg.cn/music/photo_new/T002R500x500M000${albummid}.jpg`,
+        artist: firstSinger ? firstSinger.name : '',
+        artistId: firstSinger ? firstSinger.id : '',
+        date: albumInfo.Fpublic_time || '',
+        company: (companyInfo && companyInfo.name) || '',
+        desc: ((d.getAlbumDesc && d.getAlbumDesc.Falbum_desc) || '').trim(),
+        songs,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Tencent Album Error]:', err.message);
+    errorResponse(res, 502, 'Tencent album detail failed', err.message);
+  }
+}
+
+// GET /tencent/song — QQ音乐单曲元信息（批量，逗号分隔 ids；用于补全老数据缺失的专辑/歌手 ID）
+async function handleTencentSong(req, res, query) {
+  const idsParam = query.ids || (Array.isArray(query.id) ? query.id.join(',') : query.id);
+  if (!idsParam) return errorResponse(res, 400, 'Missing song ids');
+  const ids = String(idsParam).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+  if (ids.length === 0) return errorResponse(res, 400, 'Missing song ids');
+  const cookie = getPlatformCookie(req, 'tencent') || '';
+  const baseHeaders = {
+    'Referer': 'https://y.qq.com',
+    'Cookie': cookie,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
+
+  try {
+    const results = [];
+    await runWithConcurrency(ids, 4, async (songmid) => {
+      try {
+        const apiUrl = `https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?songmid=${encodeURIComponent(songmid)}&platform=yqq&format=json`;
+        const result = await httpsGet(apiUrl, baseHeaders);
+        const json = JSON.parse(result);
+        const item = json.data && json.data[0];
+        if (json.code === 0 && item) {
+          results.push(normalizeTencentSong(item));
+        }
+      } catch (e) {
+        console.warn('[Tencent Song] 单曲元信息获取失败（忽略）:', songmid, e.message);
+      }
+    });
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'tencent',
+      data: results,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Tencent Song Error]:', err.message);
+    errorResponse(res, 502, 'Tencent song meta failed', err.message);
+  }
+}
+
+// GET /netease/song — 网易云单曲元信息（批量，逗号分隔 ids；官方接口一次可查多首）
+async function handleNeteaseSong(req, res, query) {
+  const idsParam = query.ids || query.id;
+  if (!idsParam) return errorResponse(res, 400, 'Missing song ids');
+  const ids = String(idsParam).split(',').map((s) => s.trim()).filter((s) => /^\d+$/.test(s)).slice(0, 500);
+
+  try {
+    const json = await neteaseEapiRequest(req, '/api/v3/song/detail', {
+      c: JSON.stringify(ids.map((id) => ({ id: Number(id), v: 0 }))),
+    });
+    const songs = Array.isArray(json.songs) ? json.songs.map(normalizeNeteaseSong) : [];
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'netease',
+      data: songs,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Netease Song Error]:', err.message);
+    errorResponse(res, 502, 'Netease song meta failed', err.message);
+  }
+}
+
+// GET /tencent/artist — QQ音乐歌手信息：简介 + 专辑列表（全量歌曲见 /tencent/artist/songs）
+async function handleTencentArtist(req, res, query) {
+  const singermid = query.id || query.singermid || '';
+  const singerName = (query.name || '').trim();
+  if (!singermid) return errorResponse(res, 400, 'Missing artist id (singermid)');
+  const cookie = getPlatformCookie(req, 'tencent') || '';
+  const baseHeaders = {
+    'Referer': 'https://y.qq.com',
+    'Cookie': cookie,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
+
+  try {
+    // 1) 歌手专辑列表（翻页取全部，同时提供歌手名兜底）
+    let albums = [];
+    let resolvedName = singerName;
+    try {
+      for (let begin = 0; begin < 300; begin += 30) {
+        const albumUrl = `https://c.y.qq.com/v8/fcg-bin/fcg_v8_singer_album.fcg?singermid=${encodeURIComponent(singermid)}&order=time&begin=${begin}&num=30&exstatus=1&format=json`;
+        const albumResult = await httpsGet(albumUrl, baseHeaders);
+        const albumJson = JSON.parse(albumResult);
+        if (!albumJson.data) break;
+        if (!resolvedName) resolvedName = albumJson.data.singer_name || '';
+        const list = albumJson.data.list || [];
+        albums.push(...list.map(a => ({
+          id: a.albumMID || a.album_mid || '',
+          name: a.albumName || a.album_name || '',
+          cover: a.albumMID ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${a.albumMID}.jpg` : '',
+          date: a.pubTime || a.public_time || '',
+        })).filter(a => a.id));
+        if (list.length < 30) break;
+      }
+    } catch (e) {
+      console.warn('[Tencent Artist] 专辑列表获取失败（忽略）:', e.message);
+    }
+
+    // 3) 歌手简介（无简介时静默降级）
+    let desc = '';
+    try {
+      const descUrl = `https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_singer_desc.fcg?singermid=${encodeURIComponent(singermid)}&format=json&utf8=1`;
+      const descText = await httpsGet(descUrl, baseHeaders);
+      const descJson = JSON.parse(descText);
+      if (descJson && descJson.code === 0 && typeof descJson.data === 'string' && descJson.data !== 'no supply') {
+        desc = descJson.data.trim();
+      }
+    } catch (e) {
+      console.warn('[Tencent Artist] 简介获取失败（忽略）:', e.message);
+    }
+
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'tencent',
+      data: {
+        id: singermid,
+        name: resolvedName || singerName,
+        cover: `https://y.gtimg.cn/music/photo_new/T001R300x300M000${singermid}.jpg?max_age=2592000`,
+        desc,
+        songs: [],
+        albums,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Tencent Artist Error]:', err.message);
+    errorResponse(res, 502, 'Tencent artist detail failed', err.message);
+  }
+}
+
+// GET /tencent/artist/songs — 歌手歌曲列表（分页懒加载，热门优先 + 全量曲库）
+// 首次请求会构建曲库（热门搜索打头 + 全部专辑展开去重，缓存 15 分钟），之后按 page 切片返回
+async function handleTencentArtistSongs(req, res, query) {
+  const singermid = query.id || query.singermid || '';
+  const singerName = (query.name || '').trim();
+  const page = Math.max(parseInt(query.page) || 1, 1);
+  const limit = Math.min(parseInt(query.limit) || 50, 100);
+  if (!singermid) return errorResponse(res, 400, 'Missing artist id (singermid)');
+  const cookie = getPlatformCookie(req, 'tencent') || '';
+  const baseHeaders = {
+    'Referer': 'https://y.qq.com',
+    'Cookie': cookie,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
+
+  try {
+    const songs = await getOrBuildTencentArtistSongs(singermid, singerName, baseHeaders);
+    const start = (page - 1) * limit;
+    const slice = songs.slice(start, start + limit);
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'tencent',
+      data: {
+        songs: slice,
+        total: songs.length,
+        page,
+        limit,
+        hasMore: start + slice.length < songs.length,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Tencent ArtistSongs Error]:', err.message);
+    errorResponse(res, 502, 'Tencent artist songs failed', err.message);
+  }
+}
+
+// GET /netease/search — 网易云搜索（eapi 直连，返回专辑/歌手 ID 供详情页跳转）
+// type 参数：1=单曲（默认），100=歌手，10=专辑，1000=歌单
+async function handleNeteaseSearch(req, res, query) {
+  const keyword = query.id || query.keyword || '';
+  const page = Math.max(parseInt(query.page) || 1, 1);
+  const limit = Math.min(parseInt(query.limit) || 30, 50);
+  const type = parseInt(query.type || '1', 10);
+  if (!keyword) return errorResponse(res, 400, 'Missing keyword');
+
+  try {
+    const json = await neteaseEapiRequest(req, '/api/cloudsearch/pc', {
+      s: keyword,
+      type: String(type),
+      limit: String(limit),
+      total: 'true',
+      offset: String((page - 1) * limit),
+    });
+    if (json.code !== 200) {
+      return errorResponse(res, 502, 'Netease search failed', JSON.stringify(json).slice(0, 200));
+    }
+    const result = json.result || {};
+
+    // 歌手
+    if (type === 100) {
+      const artists = (result.artists || []).map((a) => ({
+        id: a.id != null ? String(a.id) : '',
+        name: a.name || '',
+        pic: a.picUrl || a.img1v1Url || '',
+        songCount: a.musicSize || 0,
+        albumCount: a.albumSize || 0,
+      })).filter((a) => a.id);
+      return jsonResponse(res, 200, {
+        success: true, platform: 'netease', keyword, page,
+        count: artists.length, data: artists, timestamp: new Date().toISOString(),
+      });
+    }
+
+    // 专辑
+    if (type === 10) {
+      const albums = (result.albums || []).map((a) => ({
+        id: a.id != null ? String(a.id) : '',
+        name: a.name || '',
+        cover: a.picUrl || '',
+        artist: (a.artist && a.artist.name) || (a.artists && a.artists[0] && a.artists[0].name) || '',
+        artistId: a.artist && a.artist.id != null ? String(a.artist.id) : (a.artists && a.artists[0] && a.artists[0].id != null ? String(a.artists[0].id) : ''),
+        date: a.publishTime ? new Date(a.publishTime).toISOString().slice(0, 10) : '',
+        songCount: a.size || 0,
+      })).filter((a) => a.id);
+      return jsonResponse(res, 200, {
+        success: true, platform: 'netease', keyword, page,
+        count: albums.length, data: albums, timestamp: new Date().toISOString(),
+      });
+    }
+
+    // 歌单
+    if (type === 1000) {
+      const playlists = (result.playlists || []).map((p) => ({
+        id: p.id != null ? String(p.id) : '',
+        name: p.name || '',
+        cover: p.coverImgUrl || '',
+        trackCount: p.trackCount || 0,
+        playCount: p.playCount || 0,
+      })).filter((p) => p.id);
+      return jsonResponse(res, 200, {
+        success: true, platform: 'netease', keyword, page,
+        count: playlists.length, data: playlists, timestamp: new Date().toISOString(),
+      });
+    }
+
+    // 单曲（默认）
+    const songs = (result.songs || []).map(normalizeNeteaseSong);
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'netease',
+      keyword,
+      page,
+      count: songs.length,
+      data: songs,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Netease Search Error]:', err.message);
+    errorResponse(res, 502, 'Netease search failed', err.message);
+  }
+}
+
+// GET /netease/album — 网易云专辑详情（eapi 直连）
+async function handleNeteaseAlbum(req, res, query) {
+  const albumId = query.id || '';
+  if (!albumId) return errorResponse(res, 400, 'Missing album id');
+
+  try {
+    const json = await neteaseEapiRequest(req, `/api/v1/album/${albumId}`, {
+      total: 'true',
+      offset: '0',
+      id: albumId,
+      limit: '1000',
+      ext: 'true',
+      private_cloud: 'true',
+    });
+    if (json.code !== 200 || !json.album) {
+      return errorResponse(res, 404, 'Netease album not found', JSON.stringify(json).slice(0, 200));
+    }
+    const album = json.album;
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'netease',
+      data: {
+        id: String(album.id ?? albumId),
+        name: album.name || '',
+        cover: album.picUrl || '',
+        artist: (album.artist && album.artist.name) || '',
+        artistId: album.artist && album.artist.id != null ? String(album.artist.id) : '',
+        date: album.publishTime ? new Date(album.publishTime).toISOString().slice(0, 10) : '',
+        company: album.company || '',
+        desc: (album.description || album.briefDesc || '').trim(),
+        songs: (json.songs || []).map(normalizeNeteaseSong),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Netease Album Error]:', err.message);
+    errorResponse(res, 502, 'Netease album detail failed', err.message);
+  }
+}
+
+// GET /netease/artist — 网易云歌手信息 + 简介 + 专辑列表（全量歌曲见 /netease/artist/songs）
+async function handleNeteaseArtist(req, res, query) {
+  const artistId = query.id || '';
+  if (!artistId) return errorResponse(res, 400, 'Missing artist id');
+
+  try {
+    const metaJson = await neteaseEapiRequest(req, `/api/v1/artist/${artistId}`, {
+      ext: 'true',
+      private_cloud: 'true',
+      top: '50',
+      id: artistId,
+    });
+    if (metaJson.code !== 200 || !metaJson.artist) {
+      return errorResponse(res, 404, 'Netease artist not found', JSON.stringify(metaJson).slice(0, 200));
+    }
+    const artist = metaJson.artist;
+
+    // 歌手专辑列表（翻页取全部；失败静默降级为空）
+    let albums = [];
+    try {
+      let offset = 0;
+      for (let i = 0; i < 10; i++) {
+        const albumsJson = await neteaseEapiRequest(req, `/api/artist/albums/${artistId}`, {
+          artistId,
+          limit: '30',
+          offset: String(offset),
+          total: 'true',
+        });
+        if (albumsJson.code !== 200 || !Array.isArray(albumsJson.hotAlbums)) break;
+        for (const a of albumsJson.hotAlbums) {
+          if (a && a.id != null) {
+            albums.push({
+              id: String(a.id),
+              name: a.name || '',
+              cover: a.picUrl || '',
+              date: a.publishTime ? new Date(a.publishTime).toISOString().slice(0, 10) : '',
+            });
+          }
+        }
+        offset += albumsJson.hotAlbums.length;
+        if (!albumsJson.more || albumsJson.hotAlbums.length === 0) break;
+      }
+    } catch (e) {
+      console.warn('[Netease Artist] 专辑列表获取失败（忽略）:', e.message);
+    }
+
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'netease',
+      data: {
+        id: String(artist.id ?? artistId),
+        name: artist.name || '',
+        cover: artist.picUrl || '',
+        desc: (artist.briefDesc || '').trim(),
+        songs: [],
+        albums,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Netease Artist Error]:', err.message);
+    errorResponse(res, 502, 'Netease artist detail failed', err.message);
+  }
+}
+
+// GET /netease/artist/songs — 网易云歌手歌曲（官方分页接口，order=hot，支持 offset 懒加载）
+async function handleNeteaseArtistSongs(req, res, query) {
+  const artistId = query.id || '';
+  const offset = Math.max(parseInt(query.offset) || 0, 0);
+  const limit = Math.min(parseInt(query.limit) || 50, 100);
+  if (!artistId) return errorResponse(res, 400, 'Missing artist id');
+
+  try {
+    const songsJson = await neteaseEapiRequest(req, `/api/v1/artist/songs`, {
+      id: artistId,
+      private_cloud: 'true',
+      work_type: 1,
+      order: 'hot',
+      offset: String(offset),
+      limit: String(limit),
+    });
+    if (songsJson.code !== 200 || !Array.isArray(songsJson.songs)) {
+      return errorResponse(res, 502, 'Netease artist songs failed', JSON.stringify(songsJson).slice(0, 200));
+    }
+    const songs = songsJson.songs.map(normalizeNeteaseSong);
+    jsonResponse(res, 200, {
+      success: true,
+      platform: 'netease',
+      data: {
+        songs,
+        total: songsJson.total || 0,
+        offset,
+        limit,
+        hasMore: !!songsJson.more,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Netease ArtistSongs Error]:', err.message);
+    errorResponse(res, 502, 'Netease artist songs failed', err.message);
   }
 }
 
@@ -2434,9 +3315,10 @@ async function handleDownload(req, res, query) {
     const contentType = ext === 'flac' ? 'audio/flac' : 'audio/mpeg';
     const filename = `${platform}_${songId}.${ext}`;
 
-    let fetch;
-    try { fetch = (await import('node-fetch')).default; } catch(_) {}
-    const audioRes = await fetch(audioUrl, { timeout: 30000 });
+    let fetchFn;
+    try { fetchFn = (await import('node-fetch')).default; } catch(_) {}
+    if (typeof fetchFn !== 'function') fetchFn = globalThis.fetch;
+    const audioRes = await fetchFn(audioUrl, { signal: AbortSignal.timeout(30000) });
 
     if (!audioRes.ok) return errorResponse(res, 502, 'Failed to fetch audio');
 
@@ -2460,6 +3342,15 @@ const ROUTES = {
   '/tencent/toplist':    { handler: handleTencentToplist,     method: 'GET' },
   '/tencent/new-songs':  { handler: handleTencentNewSongs,    method: 'GET' },
   '/tencent/playlist':   { handler: handleTencentPlaylist,    method: 'GET' },
+  '/tencent/album':      { handler: handleTencentAlbum,       method: 'GET' },
+  '/tencent/song':       { handler: handleTencentSong,        method: 'GET' },
+  '/tencent/artist':     { handler: handleTencentArtist,      method: 'GET' },
+  '/tencent/artist/songs': { handler: handleTencentArtistSongs, method: 'GET' },
+  '/netease/search':     { handler: handleNeteaseSearch,      method: 'GET' },
+  '/netease/album':      { handler: handleNeteaseAlbum,       method: 'GET' },
+  '/netease/song':       { handler: handleNeteaseSong,        method: 'GET' },
+  '/netease/artist':     { handler: handleNeteaseArtist,      method: 'GET' },
+  '/netease/artist/songs': { handler: handleNeteaseArtistSongs, method: 'GET' },
   '/tencent/comment':    { handler: handleTencentComment,     method: 'GET' },
   '/aggregate/search':   { handler: handleAggregateSearch,    method: 'GET' },
   '/tencent/lyric-raw':  { handler: handleTencentLyricRaw,     method: 'GET' },
@@ -2478,6 +3369,7 @@ const ROUTES = {
   '/lyric':              { handler: handleLyric,              method: 'GET' },
   '/pic':                { handler: handlePic,                method: 'GET' },
   '/proxy-image':        { handler: handleProxyImage,        method: 'GET' },
+  '/proxy-audio':        { handler: handleProxyAudio,        method: 'GET' },
   '/song':               { handler: handleSong,               method: 'GET' },
   '/album':              { handler: handleAlbum,              method: 'GET' },
   '/artist':             { handler: handleArtist,             method: 'GET' },
@@ -2586,6 +3478,15 @@ const server = http.createServer(async (req, res) => {
 
 (async () => {
   await asyncReadCookies();
+
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`[Server Error] 端口 ${CONFIG.port} 已被占用 (EADDRINUSE)，Meting API 服务无法启动`);
+    } else {
+      console.error('[Server Error] Meting API 服务启动失败:', (err && err.message) || err);
+    }
+    process.exit(1);
+  });
 
   server.listen(CONFIG.port, '127.0.0.1', () => {
   console.log('');

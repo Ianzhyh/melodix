@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useConfigStore } from '../stores/configStore';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 
 interface CloseConfirmModalProps {
   isOpen: boolean;
@@ -21,17 +22,21 @@ export function CloseConfirmModal({ isOpen, onClose }: CloseConfirmModalProps) {
       await getCurrentWindow().setSkipTaskbar(true);
       await getCurrentWindow().hide();
     } else {
-      await getCurrentWindow().destroy();
+      invoke('exit_app');
     }
   };
 
   return (
     <AnimatePresence>
       {isOpen && (
-        <div style={{
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="关闭确认"
+          style={{
           position: 'fixed',
           inset: 0,
-          zIndex: 9999,
+          zIndex: 'var(--z-confirm)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

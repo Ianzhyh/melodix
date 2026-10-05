@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Song } from '../types/playback';
 import { useConfigStore } from './configStore';
+import { useToastStore } from './toastStore';
 
 export interface ScanProgress {
   scanned: number;
@@ -48,6 +49,21 @@ interface LocalLibraryState {
 
 const PAGE_SIZE = 50;
 
+// loadSongs 请求序号（模块级、非持久化）：并发时旧请求后返回的结果直接丢弃，防止覆盖新结果
+let loadRequestId = 0;
+
+// 监听 copy 导入模式回退事件：库目录无效或复制失败时，后端回退按原路径索引并附带原因
+// 同一次导入只提示一次，避免批量回退时 toast 刷屏
+const listenImportFallback = async (): Promise<UnlistenFn> => {
+  let notified = false;
+  return listen<string>('import-mode-fallback', (event) => {
+    if (notified) return;
+    notified = true;
+    const reason = event.payload || '库目录未设置';
+    useToastStore.getState().showToast(`${reason}，已按索引模式导入`, 'info');
+  });
+};
+
 export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
   songs: [],
   totalCount: 0,
@@ -63,6 +79,7 @@ export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
 
   // 加载本地歌曲列表，reset=true 时从第一页开始重新加载
   loadSongs: async (reset?: boolean) => {
+    const requestId = ++loadRequestId;
     const { page, pageSize, searchQuery, songs } = get();
     const currentPage = reset ? 0 : page;
     set({ loading: true });
@@ -72,6 +89,8 @@ export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
         limit: pageSize,
         search: searchQuery || null,
       });
+      // 过期请求直接丢弃，loading 由最新请求管理
+      if (requestId !== loadRequestId) return;
       set({
         songs: reset ? result : [...songs, ...result],
         page: currentPage + 1,
@@ -80,6 +99,7 @@ export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
       });
     } catch (err) {
       console.error('加载本地歌曲失败:', err);
+      if (requestId !== loadRequestId) return;
       set({ loading: false });
     }
   },
@@ -93,15 +113,26 @@ export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
   // 扫描本地音乐目录，监听进度事件，完成后刷新列表
   scanDirectory: async (dir: string) => {
     set({ scanning: true, scanProgress: { scanned: 0, total: 0, currentFile: '' } });
+    const { importMode, localLibraryPath } = useConfigStore.getState();
     let unlisten: UnlistenFn | null = null;
+    let unlistenFallback: UnlistenFn | null = null;
     try {
       unlisten = await listen<ScanProgress>('scan-progress', (event) => {
         set({ scanProgress: event.payload });
       });
-      const result = await invoke<ScanResult>('scan_local_music', { dir });
+      unlistenFallback = await listenImportFallback();
+      const result = await invoke<ScanResult>('scan_local_music', {
+        dir,
+        mode: importMode,
+        libraryDir: localLibraryPath || null,
+      });
       if (unlisten) {
         unlisten();
         unlisten = null;
+      }
+      if (unlistenFallback) {
+        unlistenFallback();
+        unlistenFallback = null;
       }
       set({ scanning: false, scanProgress: null });
       await get().refreshCount();
@@ -112,6 +143,10 @@ export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
         unlisten();
         unlisten = null;
       }
+      if (unlistenFallback) {
+        unlistenFallback();
+        unlistenFallback = null;
+      }
       console.error('扫描本地音乐失败:', err);
       set({ scanning: false, scanProgress: null });
       throw err;
@@ -120,10 +155,20 @@ export const useLocalLibraryStore = create<LocalLibraryState>((set, get) => ({
 
   // 导入指定文件路径列表，完成后刷新列表
   importFiles: async (filePaths: string[]) => {
-    const result = await invoke<ScanResult>('import_files', { filePaths });
-    await get().refreshCount();
-    await get().loadSongs(true);
-    return result;
+    const { importMode, localLibraryPath } = useConfigStore.getState();
+    const unlistenFallback = await listenImportFallback();
+    try {
+      const result = await invoke<ScanResult>('import_files', {
+        filePaths,
+        mode: importMode,
+        libraryDir: localLibraryPath || null,
+      });
+      await get().refreshCount();
+      await get().loadSongs(true);
+      return result;
+    } finally {
+      unlistenFallback();
+    }
   },
 
   // 删除指定 id 的本地歌曲，并从当前列表中移除

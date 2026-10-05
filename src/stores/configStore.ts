@@ -10,6 +10,10 @@ export interface PlatformCookies {
 interface ConfigState {
   sidecarPort: number;
   setSidecarPort: (port: number) => void;
+  sidecarStatus: 'idle' | 'starting' | 'running' | 'error';
+  setSidecarStatus: (status: 'idle' | 'starting' | 'running' | 'error') => void;
+  sidecarError: string | null;
+  setSidecarError: (err: string | null) => void;
   cookies: PlatformCookies;
   setCookie: (platform: keyof PlatformCookies, cookie: string) => void;
   streamingQuality: 'standard' | 'high' | 'lossless';
@@ -36,11 +40,19 @@ interface ConfigState {
   setAutoImportOnDownload: (value: boolean) => void;
   importMode: 'copy' | 'index';
   setImportMode: (mode: 'copy' | 'index') => void;
+  closeAction: 'ask' | 'minimize' | 'exit';
+  setCloseAction: (action: 'ask' | 'minimize' | 'exit') => void;
+  playerBackgroundType: 'static' | 'dynamic';
+  setPlayerBackgroundType: (type: 'static' | 'dynamic') => void;
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
   sidecarPort: 3000,
   setSidecarPort: (port) => set({ sidecarPort: port }),
+  sidecarStatus: 'idle',
+  setSidecarStatus: (status) => set({ sidecarStatus: status }),
+  sidecarError: null,
+  setSidecarError: (err) => set({ sidecarError: err }),
   cookies: ((): PlatformCookies => {
     try {
       const saved = localStorage.getItem('melodix-cookies');
@@ -165,5 +177,27 @@ export const useConfigStore = create<ConfigState>((set) => ({
   setImportMode: (mode) => {
     localStorage.setItem('melodix-import-mode', mode);
     set({ importMode: mode });
+  },
+  closeAction: ((): 'ask' | 'minimize' | 'exit' => {
+    try {
+      const saved = localStorage.getItem('melodix-close-action');
+      if (saved === 'ask' || saved === 'minimize' || saved === 'exit') return saved;
+      return 'ask';
+    } catch { return 'ask'; }
+  })(),
+  setCloseAction: (action) => {
+    localStorage.setItem('melodix-close-action', action);
+    set({ closeAction: action });
+  },
+  playerBackgroundType: ((): 'static' | 'dynamic' => {
+    try {
+      const saved = localStorage.getItem('melodix-player-bg-type');
+      if (saved === 'static' || saved === 'dynamic') return saved;
+      return 'dynamic';
+    } catch { return 'dynamic'; }
+  })(),
+  setPlayerBackgroundType: (type) => {
+    localStorage.setItem('melodix-player-bg-type', type);
+    set({ playerBackgroundType: type });
   },
 }));

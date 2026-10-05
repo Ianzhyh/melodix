@@ -36,7 +36,7 @@ process.on('SIGINT', () => {
  */
 export function ping(port: number = DEFAULT_PORT): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get(`http://localhost:${port}/?server=tencent&type=search&keywords=ping`, (res) => {
+    const req = http.get(`http://localhost:${port}/health`, (res) => {
       resolve(res.statusCode === 200);
     });
     req.on('error', () => {
@@ -79,6 +79,10 @@ export async function start(port: number = DEFAULT_PORT): Promise<void> {
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
 app.get('/', (req, res) => {
   const { server, type, id, keywords } = req.query;

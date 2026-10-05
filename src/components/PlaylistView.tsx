@@ -1,85 +1,130 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { usePlaybackStore } from '../stores/playbackStore';
+import { useCustomLibraryStore } from '../stores/customLibraryStore';
+import { useDownloadStore } from '../stores/downloadStore';
+import { useToastStore } from '../stores/toastStore';
+import { SelectionBar } from './SelectionBar';
+import { TrackList, TrackListHeader } from './common/TrackList';
+import { TrackRow } from './common/TrackRow';
 import * as api from '../api/client';
 import { getSongCoverUrl } from '../utils/cover';
-import type { PlaylistDetail, Song } from '../types/playback';
+import type { PlaylistDetail, RouteState, Song } from '../types/playback';
 
 interface PlaylistViewProps {
   playlistId?: string;
   source?: string;
+  onNavigate?: (route: RouteState) => void;
 }
 
-interface PlaylistTrackRowProps {
-  track: Song;
-  index: number;
-  displayIndex: number;
-  isCurrent: boolean;
-  isPlaying: boolean;
-  onPlay: (track: Song, index: number) => void;
-  durationLabel: string;
-}
-
-const PlaylistTrackRow = memo(function PlaylistTrackRow({
-  track,
-  index,
-  displayIndex,
-  isCurrent,
-  isPlaying,
-  onPlay,
-  durationLabel,
-}: PlaylistTrackRowProps) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.2 + index * 0.03 }}
-      className="playlist-grid pv-track-row"
-      whileHover={{ background: 'var(--color-hover, rgba(255,255,255,0.03))' }}
-      whileTap={{ scale: 0.995 }}
-      onClick={() => onPlay(track, index)}
-      style={{
-        display: 'grid', gridTemplateColumns: '40px 1fr 1fr 80px', padding: '12px 16px',
-        borderRadius: 8, cursor: 'pointer', alignItems: 'center', transition: 'background 0.2s'
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
-        <span className="pv-track-index" style={{ color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text-faint, rgba(255,255,255,0.45))', fontSize: 14 }}>{displayIndex}</span>
-        <span className="pv-play-icon" style={{ display: 'none', color: isCurrent ? 'var(--color-primary, #6366f1)' : '#fff' }}>
-          {isCurrent && isPlaying ? (
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3" height="12" rx="0.5"/><rect x="10" y="2" width="3" height="12" rx="0.5"/></svg>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z"/></svg>
-          )}
-        </span>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', paddingRight: 16, minWidth: 0 }}>
-        <span style={{ fontSize: 15, fontWeight: 500, color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text, rgba(255,255,255,0.95))', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{track.name}</span>
-        <span style={{ fontSize: 13, color: 'var(--color-text-dim, rgba(255,255,255,0.65))', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{track.artist}</span>
-      </div>
-      <div className="playlist-album-col" style={{ color: 'var(--color-text-dim, rgba(255,255,255,0.65))', fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{track.album}</div>
-      <div style={{ textAlign: 'right', color: 'var(--color-text-dim, rgba(255,255,255,0.65))', fontSize: 14 }}>
-        {durationLabel}
-      </div>
-    </motion.div>
-  );
-});
 
 import { Vibrant } from 'node-vibrant/browser';
 
-export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewProps) {
+export function PlaylistView({ playlistId, source = 'netease', onNavigate }: PlaylistViewProps) {
   const [playlist, setPlaylist] = useState<PlaylistDetail | null>(null);
   const [headerTextColor, setHeaderTextColor] = useState<string>('rgba(255,255,255,0.95)');
   const allToplistSongsRef = useRef<Song[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [jumpInput, setJumpInput] = useState('');
   const PAGE_SIZE = 30;
   const { setQueue, current, isPlaying } = usePlaybackStore();
+  const { libraries, createLibrary, addSongs } = useCustomLibraryStore();
+  const addTasks = useDownloadStore((s) => s.addTasks);
+  const [libMenuOpen, setLibMenuOpen] = useState(false);
+  const [newLibName, setNewLibName] = useState('');
+  const [importing, setImporting] = useState(false);
+  const libMenuRef = useRef<HTMLDivElement>(null);
+  // 多选模式：选中集合按当前页可见歌曲计（切歌单/翻页重置）
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）退出多选
+  useEffect(() => {
+    window.addEventListener('melodix-close-popups', exitSelectMode);
+    return () => window.removeEventListener('melodix-close-popups', exitSelectMode);
+  }, [exitSelectMode]);
+
+  // Close lib menu on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (libMenuRef.current && !libMenuRef.current.contains(e.target as Node)) {
+        setLibMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const pageTracks = useMemo(() => playlist?.tracks ?? [], [playlist]);
+  const selectedSongs = useMemo(
+    () => pageTracks.filter((t) => selectedIds.has(t.id)),
+    [pageTracks, selectedIds],
+  );
+  const allSelected = selectMode && pageTracks.length > 0 && pageTracks.every((t) => selectedIds.has(t.id));
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      if (pageTracks.length > 0 && pageTracks.every((t) => prev.has(t.id))) return new Set();
+      return new Set(pageTracks.map((t) => t.id));
+    });
+  }, [pageTracks]);
+
+  const handleBatchDownload = useCallback(() => {
+    if (selectedSongs.length === 0) return;
+    addTasks(selectedSongs);
+  }, [selectedSongs, addTasks]);
+
+  const handleAddToLibrary = useCallback(async (libraryId: string) => {
+    setLibMenuOpen(false);
+    setImporting(true);
+    try {
+      if (selectMode) {
+        if (selectedSongs.length === 0) {
+          useToastStore.getState().showToast('请先选择歌曲', 'info');
+          return;
+        }
+        addSongs(libraryId, selectedSongs);
+        return;
+      }
+      const songs = source === 'toplist' && allToplistSongsRef.current.length > 0
+        ? allToplistSongsRef.current
+        : playlist?.tracks ?? [];
+      addSongs(libraryId, songs);
+    } finally {
+      setImporting(false);
+    }
+  }, [playlist, source, addSongs, selectMode, selectedSongs]);
+
+  const handleAddToNewLibrary = useCallback(async () => {
+    const name = newLibName.trim() || (playlist?.name ?? '新音乐库');
+    const id = createLibrary(name);
+    setNewLibName('');
+    if (id) await handleAddToLibrary(id);
+  }, [newLibName, playlist, createLibrary, handleAddToLibrary]);
+
 
   const loadPage = useCallback(async (page: number) => {
     if (!playlistId) return;
     setIsLoading(true);
+    setLoadError(null);
+    // 切歌单/翻页后可见歌曲集合变化，清空选中避免残留隐藏选择
+    setSelectedIds(new Set());
     try {
       if (source === 'toplist') {
         // Only fetch once, then paginate on the client side
@@ -110,7 +155,9 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
       requestAnimationFrame(() => {
         document.querySelector('main')?.scrollTo({ top: 0 });
       });
-    } catch {
+    } catch (e) {
+      setLoadError('加载失败，请重试');
+      console.error('加载歌单失败:', e);
     } finally {
       setIsLoading(false);
     }
@@ -120,6 +167,9 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
     if (!playlistId) return;
     allToplistSongsRef.current = [];
     setCurrentPage(1);
+    // 切歌单 = 进入新视图，退出多选（对齐音乐库切库行为）
+    setSelectMode(false);
+    setSelectedIds(new Set());
     loadPage(1);
   }, [playlistId, source, loadPage]);
 
@@ -161,6 +211,16 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
     }
   }, [playlist, source, setQueue, trackOffset]);
 
+  const handleOpenArtist = useCallback((id: string, name: string) => {
+    if (!id || !onNavigate) return;
+    onNavigate({ page: 'artist', id, source: source === 'toplist' ? 'tencent' : (playlist?.source || source), name });
+  }, [source, playlist, onNavigate]);
+
+  const handleOpenAlbum = useCallback((id: string, name: string) => {
+    if (!id || !onNavigate) return;
+    onNavigate({ page: 'album', id, source: source === 'toplist' ? 'tencent' : (playlist?.source || source), name });
+  }, [source, playlist, onNavigate]);
+
   const handleJump = useCallback(() => {
     const num = parseInt(jumpInput, 10);
     if (!Number.isFinite(num) || num < 1 || num > totalPages) return;
@@ -175,7 +235,28 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
           <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
         </svg>
-        <span style={{ fontSize: 16 }}>Select a playlist to view</span>
+        <span style={{ fontSize: 16 }}>请选择一个歌单查看</span>
+      </div>
+    );
+  }
+
+  if (loadError && !isLoading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-faint)', gap: 16, padding: 40 }}>
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <span style={{ fontSize: 16 }}>{loadError}</span>
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => loadPage(currentPage)}
+          style={{ padding: '8px 24px', borderRadius: 8, background: 'var(--color-primary, #6366f1)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 500 }}
+        >
+          重试
+        </motion.button>
       </div>
     );
   }
@@ -210,7 +291,7 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
   if (!playlist) {
     return (
       <div style={{ padding: '40px', color: 'var(--color-text-dim, rgba(255,255,255,0.65))', fontSize: 14 }}>
-        Playlist not found or failed to load.
+        歌单不存在或加载失败
       </div>
     );
   }
@@ -219,28 +300,13 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
   const totalDuration = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
   const formatDuration = (s: number) => {
     const mins = Math.floor(s / 60);
-    return `${mins} min`;
+    return `${mins} 分钟`;
   };
 
   return (
     <div style={{ position: 'relative', width: '100%', minHeight: '100%', paddingBottom: 120 }}>
       <style>{`
-        .pv-track-row:hover .pv-track-index {
-          display: none !important;
-        }
-        .pv-track-row:hover .pv-play-icon {
-          display: inline-flex !important;
-        }
-        
         /* Media queries for responsive PlaylistView */
-        @media (max-width: 768px) {
-          .playlist-grid {
-            grid-template-columns: 40px 1fr 80px !important;
-          }
-          .playlist-album-col {
-            display: none !important;
-          }
-        }
         @media (max-width: 640px) {
           .playlist-header-container {
             height: auto !important;
@@ -294,12 +360,12 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
           </motion.div>
           
           <motion.div className="playlist-info-wrapper" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }} style={{ flex: 1, minWidth: 0 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'rgba(255,255,255,0.65)' }}>Playlist</span>
+            <span style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'rgba(255,255,255,0.65)' }}>歌单</span>
             <h1 style={{ fontSize: 48, fontWeight: 800, margin: '8px 0 16px', letterSpacing: -1.5, color: headerTextColor, lineHeight: 1.1, maxWidth: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {playlist.name}
             </h1>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: 'rgba(255,255,255,0.65)' }}>
-              <span>{playlist.trackCount} songs</span>
+              <span>{playlist.trackCount} 首</span>
               {totalDuration > 0 && (
                 <>
                   <span>•</span>
@@ -312,7 +378,7 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
       </div>
 
       {/* Action Bar */}
-      <div style={{ padding: '24px 40px', display: 'flex', alignItems: 'center', gap: 24 }}>
+      <div style={{ padding: '24px 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <motion.button
           onClick={handlePlayAll}
           whileHover={{ scale: 1.05 }}
@@ -320,47 +386,222 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
           style={{
             width: 56, height: 56, borderRadius: '50%', background: 'var(--color-primary, #6366f1)', border: 'none',
             display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', cursor: 'pointer',
-            boxShadow: '0 8px 24px var(--color-primary-20, rgba(99,102,241,0.4))'
+            boxShadow: '0 8px 24px rgba(0,0,0,0.15)'
           }}
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8V4z"/></svg>
         </motion.button>
+
+        {/* Operations — 右侧 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* 多选按钮（无歌曲时禁用） */}
+          <motion.button
+            onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+            whileHover={{ scale: playlist.tracks.length > 0 ? 1.04 : 1 }}
+            whileTap={{ scale: playlist.tracks.length > 0 ? 0.96 : 1 }}
+            disabled={playlist.tracks.length === 0}
+            style={{
+              height: 38, padding: '0 18px', borderRadius: 20,
+              background: selectMode ? 'var(--color-primary)' : 'var(--glass-2)',
+              border: `1px solid ${selectMode ? 'var(--color-primary)' : 'var(--glass-border)'}`,
+              color: selectMode ? '#fff' : 'var(--color-text)',
+              display: 'flex', alignItems: 'center', gap: 8, cursor: playlist.tracks.length > 0 ? 'pointer' : 'not-allowed',
+              fontSize: 14, fontWeight: 500, opacity: playlist.tracks.length > 0 ? 1 : 0.5,
+              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              backdropFilter: 'var(--blur-sm)',
+              WebkitBackdropFilter: 'var(--blur-sm)',
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="4" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+            {selectMode ? '退出多选' : '多选'}
+          </motion.button>
+
+          {/* Add to Library Button */}
+          <div ref={libMenuRef} style={{ position: 'relative' }}>
+          <motion.button
+            onClick={() => setLibMenuOpen(v => !v)}
+            whileHover={{ scale: 1.04 }}
+            whileTap={{ scale: 0.96 }}
+            style={{
+              height: 38, padding: '0 18px', borderRadius: 20,
+              background: libMenuOpen ? 'var(--glass-3)' : 'var(--glass-2)',
+              border: `1px solid ${libMenuOpen ? 'var(--color-primary)' : 'var(--glass-border)'}`,
+              color: libMenuOpen ? 'var(--color-primary)' : 'var(--color-text)',
+              display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14, fontWeight: 500,
+              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              backdropFilter: 'var(--blur-sm)',
+              WebkitBackdropFilter: 'var(--blur-sm)',
+              boxShadow: libMenuOpen ? 'none' : 'none',
+            }}
+          >
+            {importing ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            )}
+            {selectMode ? `加入音乐库 (${selectedIds.size})` : '加入音乐库'}
+          </motion.button>
+
+          <AnimatePresence>
+            {libMenuOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                transition={{ duration: 0.15, ease: 'easeOut' }}
+                style={{
+                  position: 'absolute', top: '100%', right: 0, marginTop: 8, minWidth: 260,
+                  background: 'var(--acrylic-noise), var(--acrylic-tint)',
+                  backdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
+                  WebkitBackdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
+                  border: '1px solid var(--glass-border)',
+                  borderRadius: 16, padding: 8, zIndex: 50,
+                  boxShadow: '0 16px 48px rgba(0,0,0,0.3)',
+                }}
+              >
+                {/* New Library Row */}
+                <div style={{ padding: '4px 8px 10px', borderBottom: '1px solid var(--glass-border)', marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-dim)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8, padding: '0 4px' }}>新建音乐库</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      autoFocus
+                      placeholder={playlist?.name ?? '音乐库名称'}
+                      value={newLibName}
+                      onChange={e => setNewLibName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleAddToNewLibrary(); }}
+                      style={{
+                        flex: 1, height: 34, padding: '0 10px', fontSize: 13, borderRadius: 10,
+                        background: 'var(--glass-2)', border: '1px solid var(--glass-border)',
+                        color: 'var(--color-text)', outline: 'none', fontFamily: 'inherit',
+                      }}
+                    />
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={handleAddToNewLibrary}
+                      style={{
+                        height: 34, padding: '0 14px', borderRadius: 10, fontSize: 13, fontWeight: 600,
+                        background: 'var(--color-primary)', border: 'none', color: '#fff', cursor: 'pointer',
+                        whiteSpace: 'nowrap', flexShrink: 0,
+                      }}
+                    >
+                      创建
+                    </motion.button>
+                  </div>
+                </div>
+
+                {/* Existing Libraries */}
+                {libraries.length === 0 ? (
+                  <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--color-text-faint)' }}>暂无音乐库，请新建</div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-dim)', letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 4, padding: '2px 12px' }}>已有音乐库</div>
+                    {libraries.map(lib => (
+                      <motion.div
+                        key={lib.id}
+                        whileHover={{ background: 'var(--color-surface-hover)' }}
+                        onClick={() => handleAddToLibrary(lib.id)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                          borderRadius: 10, cursor: 'pointer', transition: 'background 0.15s',
+                        }}
+                      >
+                        <div style={{
+                          width: 34, height: 34, borderRadius: 8, flexShrink: 0, overflow: 'hidden',
+                          background: 'var(--glass-3)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}>
+                          {lib.songs[0] ? (
+                            <img src={getSongCoverUrl(lib.songs[0], 64)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.5 }}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                          )}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lib.name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--color-text-faint)', marginTop: 2 }}>{lib.songs.length} 首</div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+          </div>
+        </div>
       </div>
+
+      {/* 多选操作栏：动作栏下方吸顶 */}
+      <AnimatePresence>
+        {selectMode && (
+          <SelectionBar
+            count={selectedIds.size}
+            total={pageTracks.length}
+            allSelected={allSelected}
+            onToggleSelectAll={toggleSelectAll}
+            onExit={exitSelectMode}
+            actions={[
+              {
+                key: 'download',
+                label: `下载${selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}`,
+                disabled: selectedIds.size === 0,
+                onClick: handleBatchDownload,
+              },
+            ]}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Tracklist Table */}
       {playlist.tracks.length === 0 ? (
         <div style={{ padding: '40px', textAlign: 'center', color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-          This playlist has no tracks.
+          该歌单暂无歌曲
         </div>
       ) : (
         <div style={{ padding: '0 40px' }}>
-          <div className="playlist-grid" style={{
-            display: 'grid', gridTemplateColumns: '40px 1fr 1fr 80px', padding: '0 16px 12px',
-            borderBottom: '1px solid var(--color-border, rgba(255,255,255,0.04))', color: 'var(--color-text-dim, rgba(255,255,255,0.65))',
-            fontSize: 13, fontWeight: 500, letterSpacing: 0.5, marginBottom: 16
-          }}>
-            <div>#</div>
-            <div>TITLE</div>
-            <div className="playlist-album-col">ALBUM</div>
-            <div style={{ textAlign: 'right' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {playlist.tracks.map((track, i) => (
-              <PlaylistTrackRow
-                key={`${track.id}-${i}`}
-                track={track}
-                index={i}
-                displayIndex={trackOffset + i + 1}
-                isCurrent={current?.id === track.id}
-                isPlaying={isPlaying}
-                onPlay={handlePlayTrack}
-                durationLabel={track.duration ? formatDuration(track.duration) : '--:--'}
-              />
-            ))}
-          </div>
+          <TrackList showCover={false}>
+            <TrackListHeader showCover={false} />
+            <motion.div
+              variants={{
+                show: { transition: { staggerChildren: 0.03 } }
+              }}
+              initial="hidden"
+              animate="show"
+              style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+            >
+              {playlist.tracks.map((track, i) => (
+                <motion.div
+                  key={`${track.id}-${i}`}
+                  variants={{
+                    hidden: { opacity: 0, y: 10 },
+                    show: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 300, damping: 24 } }
+                  }}
+                  layout="position"
+                >
+                  <TrackRow
+                    song={track}
+                    index={i}
+                    displayIndex={trackOffset + i + 1}
+                    isCurrent={current?.id === track.id}
+                    isPlaying={isPlaying}
+                    selectMode={selectMode}
+                    selected={selectedIds.has(track.id)}
+                    onToggleSelect={toggleSelect}
+                    onPlay={handlePlayTrack}
+                    onOpenArtist={handleOpenArtist as any}
+                    onOpenAlbum={handleOpenAlbum as any}
+                    showCover={false}
+                  />
+                </motion.div>
+              ))}
+            </motion.div>
+          </TrackList>
 
           {/* Pagination */}
           {totalPages > 1 && (
@@ -380,7 +621,7 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
                   padding: '6px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500,
                 }}
               >
-                Prev
+                上一页
               </motion.button>
               <span style={{ color: 'var(--color-text-faint)', fontSize: 13, padding: '0 12px' }}>
                 {currentPage} / {totalPages}
@@ -397,7 +638,7 @@ export function PlaylistView({ playlistId, source = 'netease' }: PlaylistViewPro
                   padding: '6px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500,
                 }}
               >
-                Next
+                下一页
               </motion.button>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12 }}>
                 <span style={{ color: 'var(--color-text-faint)', fontSize: 13 }}>跳至</span>

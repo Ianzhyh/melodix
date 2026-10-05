@@ -3,7 +3,9 @@ import { vi, describe, it, expect, beforeEach, afterEach, beforeAll } from 'vite
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from '../../../src/App';
+import { VolumeControl } from '../../../src/components/PlayerBar/VolumeControl';
 import { usePlaybackStore } from '../../../src/stores/playbackStore';
+import { useUIStore } from '../../../src/stores/uiStore';
 import { useHomeStore } from '../../../src/stores/homeStore';
 import { useSearchStore } from '../../../src/stores/searchStore';
 import { useConfigStore } from '../../../src/stores/configStore';
@@ -22,6 +24,8 @@ vi.mock('@tauri-apps/api/window', () => ({
     minimize: vi.fn(),
     toggleMaximize: vi.fn(),
     close: vi.fn(),
+    onCloseRequested: vi.fn().mockResolvedValue(() => {}),
+    hide: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
@@ -55,6 +59,11 @@ vi.mock('../../../src/api/client', () => ({
   getProxyImageUrl: vi.fn().mockReturnValue('http://example.com/proxy.jpg'),
   getComments: vi.fn().mockResolvedValue({ data: [] }),
   getDownloadUrl: vi.fn().mockReturnValue('http://example.com/download.mp3'),
+  checkAuth: vi.fn().mockResolvedValue(null),
+  getLoginStatus: vi.fn().mockResolvedValue(''),
+  ensureSidecarRunning: vi.fn().mockResolvedValue(undefined),
+  getProxiedCoverUrl: vi.fn().mockReturnValue('http://example.com/cover.jpg'),
+  formatTime: vi.fn().mockReturnValue('0:00'),
 }));
 
 // Mock HTMLMediaElement functions
@@ -261,6 +270,67 @@ describe('Challenger Optimization UI/UX Stress Tests', () => {
       expect(usePlaybackStore.getState().progress).toBeGreaterThanOrEqual(0.0);
       expect(usePlaybackStore.getState().progress).toBeLessThanOrEqual(1.0);
     });
+
+    it('should toggle mute only when clicking the volume icon, without opening the slider popup', async () => {
+      root = ReactDOM.createRoot(container);
+      root.render(<App />);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const volumeBtn = document.querySelector('.player-volume-container button') as HTMLButtonElement;
+      expect(volumeBtn).toBeTruthy();
+
+      const isPlayingBefore = usePlaybackStore.getState().isPlaying;
+
+      volumeBtn.click();
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      // Clicking the icon only toggles mute; playback state is untouched
+      expect(usePlaybackStore.getState().isMuted).toBe(true);
+      expect(usePlaybackStore.getState().isPlaying).toBe(isPlayingBefore);
+
+      // Slider popup is hover-only: clicking the icon must not render it
+      expect(document.querySelector('.vertical-range')).toBeNull();
+
+      // Toggling back works and still no popup
+      volumeBtn.click();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(usePlaybackStore.getState().isMuted).toBe(false);
+      expect(document.querySelector('.vertical-range')).toBeNull();
+    });
+
+    it('should show the vertical slider on hover and sync volume changes to the playback store', async () => {
+      root = ReactDOM.createRoot(container);
+      root.render(
+        <VolumeControl
+          volume={0.5}
+          isMuted={false}
+          onVolumeChange={(val) => usePlaybackStore.getState().setVolume(val)}
+          onToggleMute={() => usePlaybackStore.getState().toggleMute()}
+        />
+      );
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      // Before hover the slider popup is hidden
+      expect(document.querySelector('.vertical-range')).toBeNull();
+
+      // Hover the volume container to reveal the slider
+      const vcContainer = document.querySelector('.player-volume-container') as HTMLDivElement;
+      vcContainer.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      const slider = document.querySelector('.vertical-range') as HTMLInputElement;
+      expect(slider).toBeTruthy();
+
+      // Drag the slider to 0.55 and confirm the store syncs
+      // Use the native value setter so React's input value tracker sees the change
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      nativeInputValueSetter.call(slider, '0.55');
+      slider.dispatchEvent(new window.Event('input', { bubbles: true }));
+      slider.dispatchEvent(new window.Event('change', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      expect(usePlaybackStore.getState().volume).toBe(0.55);
+    });
   });
 
   describe('3. Window Resize Stress Testing', () => {
@@ -284,8 +354,34 @@ describe('Challenger Optimization UI/UX Stress Tests', () => {
       // Check if PlayerBar, Sidebar, and other components exist without crashing
       const sidebarContainer = document.querySelector('.sidebar-container');
       const playerBarElement = document.querySelector('.player-progress-container');
-      
+
       expect(sidebarContainer).toBeDefined();
+      expect(document.body.innerHTML).toContain('Melodix');
+    });
+  });
+
+  describe('4. Global Escape Layered Close Testing', () => {
+    it('should close the active panel on the first Escape and stay clean on a second Escape', async () => {
+      root = ReactDOM.createRoot(container);
+      root.render(<App />);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Open the queue panel via the UI store (same path as the queue button)
+      useUIStore.getState().openPanel('queue');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useUIStore.getState().activePanel).toBe('queue');
+
+      // First Escape: panel layer closes (higher than local popup broadcast)
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useUIStore.getState().activePanel).toBeNull();
+
+      // Second Escape: falls through to the local popup broadcast, must not throw nor reopen the panel
+      expect(() => {
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+      }).not.toThrow();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useUIStore.getState().activePanel).toBeNull();
       expect(document.body.innerHTML).toContain('Melodix');
     });
   });

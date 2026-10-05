@@ -5,6 +5,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -260,44 +261,109 @@ fn insert_song(conn: &Connection, song: &LocalSong) -> Result<bool> {
     Ok(affected > 0)
 }
 
-// 递归收集目录下所有支持格式的文件路径
-fn collect_audio_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.is_dir() {
-        return Err(anyhow!("不是目录: {}", dir.display()));
+// 递归遍历目录，对每个支持的音频文件调用回调（流式处理，不缓存路径列表）
+// 用于替代先收集到大 Vec 再遍历的模式，降低大目录扫描的内存峰值
+fn for_each_audio_file<F>(dir: &Path, mut callback: F) -> Result<()>
+where
+    F: FnMut(&Path) -> Result<()>,
+{
+    fn walk<F>(dir: &Path, callback: &mut F) -> Result<()>
+    where
+        F: FnMut(&Path) -> Result<()>,
+    {
+        if !dir.is_dir() {
+            return Err(anyhow!("不是目录: {}", dir.display()));
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, callback)?;
+            } else if is_supported_format(&path) {
+                callback(&path)?;
+            }
+        }
+        Ok(())
     }
+    walk(dir, &mut callback)
+}
 
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_audio_files(&path, files)?;
-        } else if is_supported_format(&path) {
-            files.push(path);
+// 计数目录下支持的音频文件数量（不存储路径，仅计数，内存 O(1)）
+fn count_audio_files(dir: &Path) -> Result<u32> {
+    let mut count = 0u32;
+    for_each_audio_file(dir, |_path| {
+        count += 1;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+// 批量入库：把缓冲中的歌曲逐条插入数据库，插完立即释放锁
+// 短暂持锁避免扫描大目录期间阻塞 get_local_songs 等查询命令
+fn flush_batch(
+    db: &DbState,
+    batch: &mut Vec<LocalSong>,
+    imported: &mut u32,
+    skipped: &mut u32,
+    failed: &mut u32,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let conn = db.lock().map_err(|e| anyhow!("锁数据库失败: {}", e))?;
+    for song in batch.drain(..) {
+        match insert_song(&conn, &song) {
+            Ok(true) => *imported += 1,
+            Ok(false) => *skipped += 1,
+            Err(_) => *failed += 1,
         }
     }
-
     Ok(())
 }
 
-// 扫描目录：递归遍历，逐个解析元数据并入库，通过事件上报进度
-pub fn scan_directory(db: &DbState, dir: &Path, app: &AppHandle) -> Result<ScanResult> {
+// 扫描目录：流式遍历，逐个解析元数据并入库，通过事件上报进度
+// 优化点：不再一次性收集所有文件路径到大 Vec，改为两阶段流式处理
+//   阶段1 仅计数得到 total（不缓存路径）
+//   阶段2 逐个文件解析入库，处理完即释放，内存峰值从 O(n) 降为 O(1)
+// 数据库锁分批获取：每满 50 条短暂持锁插入后释放，不再全程持锁
+// copy_dir 为 Some 时（copy 导入模式）：每个文件先复制到库目录再索引复制后的路径
+pub fn scan_directory(
+    db: &DbState,
+    dir: &Path,
+    app: &AppHandle,
+    copy_dir: Option<&Path>,
+) -> Result<ScanResult> {
     let covers_dir = get_covers_dir(app)?;
 
-    // 递归收集所有支持格式的文件路径
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_audio_files(dir, &mut files)?;
+    // 阶段1：先计数得到 total（不缓存路径列表，降低内存峰值）
+    let total = count_audio_files(dir)?;
 
-    let total = files.len() as u32;
     let mut scanned = 0u32;
     let mut imported = 0u32;
     let mut skipped = 0u32;
     let mut failed = 0u32;
 
-    let conn = db.lock().map_err(|e| anyhow!("锁数据库失败: {}", e))?;
+    // 分批入库缓冲：满 BATCH_SIZE 条或遍历结束时 flush
+    const BATCH_SIZE: usize = 50;
+    let mut batch: Vec<LocalSong> = Vec::with_capacity(BATCH_SIZE);
 
-    for file_path in &files {
+    // 阶段2：流式遍历，逐个解析元数据，攒批入库
+    for_each_audio_file(dir, |file_path| {
         scanned += 1;
-        let current_file = file_path.to_string_lossy().to_string();
+
+        // copy 模式：先复制到库目录，复制失败回退按原路径索引并通知前端
+        let path_to_index: PathBuf = match copy_dir {
+            Some(copy_dir) => match copy_to_library(file_path, copy_dir) {
+                Ok(copied) => copied,
+                Err(e) => {
+                    let _ = app.emit("import-mode-fallback", format!("复制失败: {}", e));
+                    file_path.to_path_buf()
+                }
+            },
+            None => file_path.to_path_buf(),
+        };
+
+        let current_file = path_to_index.to_string_lossy().to_string();
 
         // 上报扫描进度
         let _ = app.emit(
@@ -309,15 +375,21 @@ pub fn scan_directory(db: &DbState, dir: &Path, app: &AppHandle) -> Result<ScanR
             },
         );
 
-        match parse_file_metadata(file_path, &covers_dir) {
-            Ok(song) => match insert_song(&conn, &song) {
-                Ok(true) => imported += 1,
-                Ok(false) => skipped += 1,
-                Err(_) => failed += 1,
-            },
+        match parse_file_metadata(&path_to_index, &covers_dir) {
+            Ok(song) => {
+                batch.push(song);
+                if batch.len() >= BATCH_SIZE {
+                    flush_batch(db, &mut batch, &mut imported, &mut skipped, &mut failed)?;
+                }
+            }
             Err(_) => failed += 1,
         }
-    }
+
+        Ok(())
+    })?;
+
+    // 遍历结束，插入余量
+    flush_batch(db, &mut batch, &mut imported, &mut skipped, &mut failed)?;
 
     Ok(ScanResult {
         scanned,
@@ -333,6 +405,65 @@ pub fn import_single_file(db: &DbState, file_path: &Path, covers_dir: &Path) -> 
     let song = parse_file_metadata(file_path, covers_dir)?;
     let conn = db.lock().map_err(|e| anyhow!("锁数据库失败: {}", e))?;
     insert_song(&conn, &song)
+}
+
+// 根据导入模式与库目录参数解析出复制目标目录
+// 仅当 mode 为 "copy" 且库目录有效时返回 Some；否则返回 None（按索引模式处理）
+// copy 模式但库目录无效时通过 import-mode-fallback 事件通知前端回退原因
+pub fn resolve_copy_dir(
+    app: &AppHandle,
+    mode: Option<&str>,
+    library_dir: Option<&str>,
+) -> Option<PathBuf> {
+    if mode != Some("copy") {
+        return None;
+    }
+    match library_dir {
+        Some(d) if !d.is_empty() => {
+            let dir = PathBuf::from(d);
+            if dir.is_dir() {
+                Some(dir)
+            } else {
+                let _ = app.emit("import-mode-fallback", "库目录不存在");
+                None
+            }
+        }
+        _ => {
+            let _ = app.emit("import-mode-fallback", "库目录未设置");
+            None
+        }
+    }
+}
+
+// 复制文件到库目录，文件名冲突时依次加 (1)、(2)… 后缀，返回复制后的目标路径
+pub fn copy_to_library(src: &Path, dir: &Path) -> Result<PathBuf> {
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| anyhow!("无效的文件路径: {}", src.display()))?;
+    let first_dest = dir.join(file_name);
+
+    // 源文件已在库目录中（如扫描库目录自身）：直接索引原路径，避免复制出重复副本
+    if let (Ok(src_canon), Ok(dest_canon)) = (src.canonicalize(), first_dest.canonicalize()) {
+        if src_canon == dest_canon {
+            return Ok(dest_canon);
+        }
+    }
+
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("audio");
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let mut dest = first_dest;
+    let mut counter = 1u32;
+    while dest.exists() {
+        let name = if ext.is_empty() {
+            format!("{}({})", stem, counter)
+        } else {
+            format!("{}({}).{}", stem, counter, ext)
+        };
+        dest = dir.join(name);
+        counter += 1;
+    }
+    std::fs::copy(src, &dest)?;
+    Ok(dest)
 }
 
 // 查询歌曲列表
@@ -432,13 +563,17 @@ pub fn start_watcher(app: AppHandle, dir: PathBuf, db: DbState) -> Result<Watche
                             // spawn tokio task 延迟 2 秒后导入（等文件写入完成）
                             let _ = tauri::async_runtime::spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                match import_single_file(&db, &path, &covers) {
-                                    Ok(true) => {
-                                        // 新导入成功，通知前端刷新
-                                        let _ = app.emit("local-music-updated", ());
+                                // import_single_file 是同步阻塞（lofty 读文件 + 数据库锁），
+                                // 放入 spawn_blocking 避免阻塞 tokio runtime worker 线程
+                                let _ = tauri::async_runtime::spawn_blocking(move || {
+                                    match import_single_file(&db, &path, &covers) {
+                                        Ok(true) => {
+                                            // 新导入成功，通知前端刷新
+                                            let _ = app.emit("local-music-updated", ());
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
-                                }
+                                });
                             });
                         }
                     }
@@ -514,15 +649,31 @@ pub fn enrich_song(
     }
 
     // 3. 调用 sidecar 搜索 API（QQ 音乐）
-    // 搜索关键词用 title + " " + artist，URL 中空格用 + 号
+    // 搜索关键词用 title + " " + artist
+    // URL 参数编码：& = # ? 等字符会破坏查询串；空格编码为 %20，服务端解码后仍是空格
     let keyword = format!("{} {}", title, artist_str).trim().to_string();
-    let search_keyword = keyword.replace(' ', "+");
     let search_url = format!(
         "http://127.0.0.1:{}/tencent/search?id={}&page=1&limit=5",
-        sidecar_port, search_keyword
+        sidecar_port,
+        urlencoding::encode(&keyword)
     );
 
-    let search_resp = match reqwest::blocking::get(&search_url) {
+    // blocking 客户端加 30 秒总超时，防止 sidecar 无响应时永久挂起
+    let search_client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[enrich] 构建搜索客户端失败 song_id={}: {}", song_id, e);
+            return Ok(EnrichResult {
+                cover_updated: false,
+                lyrics_updated: false,
+                matched: false,
+            });
+        }
+    };
+    let search_resp = match search_client.get(&search_url).send() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[enrich] 搜索请求失败 song_id={}: {}", song_id, e);
@@ -640,10 +791,11 @@ pub fn enrich_song(
             );
             fetch_image_bytes(&url)
         } else if let Some(ref cover_url) = cover_url {
-            // 用 cover 直链调用 /proxy-image 端点
+            // 用 cover 直链调用 /proxy-image 端点（cover_url 含 & = ? 等字符，必须编码）
             let url = format!(
                 "http://127.0.0.1:{}/proxy-image?url={}",
-                sidecar_port, cover_url
+                sidecar_port,
+                urlencoding::encode(cover_url)
             );
             fetch_image_bytes(&url)
         } else {
@@ -675,30 +827,38 @@ pub fn enrich_song(
         );
 
         // QQ 音乐歌词需要 X-Tencent-Cookie 头
-        let client = reqwest::blocking::Client::new();
-        let lyric_text = match client
-            .get(&lyric_url)
-            .header("X-Tencent-Cookie", tencent_cookie)
-            .send()
-        {
-            Ok(r) => match r.json::<serde_json::Value>() {
-                Ok(v) => {
-                    if v.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
-                        // 存储 QRC JSON 字符串（包含 lyrics 数组和 trans）
-                        Some(v.to_string())
-                    } else {
+        // blocking 客户端加 30 秒总超时，防止歌词请求永久挂起
+        let lyric_client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .ok();
+        let lyric_text = match lyric_client {
+            Some(client) => match client
+                .get(&lyric_url)
+                .header("X-Tencent-Cookie", tencent_cookie)
+                .send()
+            {
+                Ok(r) => match r.json::<serde_json::Value>() {
+                    Ok(v) => {
+                        if v.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+                            // 存储 QRC JSON 字符串（包含 lyrics 数组和 trans）
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[enrich] 歌词响应解析失败 song_id={}: {}", song_id, e);
                         None
                     }
-                }
+                },
                 Err(e) => {
-                    eprintln!("[enrich] 歌词响应解析失败 song_id={}: {}", song_id, e);
+                    eprintln!("[enrich] 歌词请求失败 song_id={}: {}", song_id, e);
                     None
                 }
             },
-            Err(e) => {
-                eprintln!("[enrich] 歌词请求失败 song_id={}: {}", song_id, e);
-                None
-            }
+            // 客户端构建失败极罕见，按歌词获取失败处理
+            None => None,
         };
 
         if let Some(text) = lyric_text {
@@ -722,7 +882,12 @@ pub fn enrich_song(
 
 // 辅助函数：下载图片二进制数据
 fn fetch_image_bytes(url: &str) -> Option<Vec<u8>> {
-    match reqwest::blocking::get(url) {
+    // blocking 客户端加 30 秒总超时，防止图片下载永久挂起（封面体积小，30 秒足够）
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .ok()?;
+    match client.get(url).send() {
         Ok(r) => {
             if !r.status().is_success() {
                 eprintln!("[enrich] 图片下载失败 status={}", r.status());

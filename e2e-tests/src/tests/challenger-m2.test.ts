@@ -2,6 +2,11 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { usePlaybackStore } from '../../../src/stores/playbackStore';
 
+// AudioEngine ended 自动取 URL 会经由 api/client → ensureSidecarRunning → invoke
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(3000),
+}));
+
 // Mock the window.Audio if needed. In JSDOM, Audio is available but has no real playback.
 // We can spy on HTMLMediaElement prototype methods to control them.
 const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
