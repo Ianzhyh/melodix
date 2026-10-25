@@ -18,7 +18,7 @@
  *    GET /song?server=netease&id=歌曲ID                        歌曲详情
  *    GET /album?server=netease&id=专辑ID                       专辑信息
  *    GET /artist?server=netease&id=歌手ID                      歌手列表
- *    GET /playlist?server=netease&id=歌单ID                    歌单内容
+ *    GET /playlist?server=netease&id=歌单ID&page=1&limit=30    歌单内容（分页；不传 page/limit 时返回全量）
  *    GET /health                                               健康检查
  * 
  * ============================================================
@@ -270,24 +270,29 @@ function checkRateLimit(ip) {
   const now = Date.now();
   const record = rateLimitStore.get(ip);
   
-  if (!record || now - record.resetTime > CONFIG.rateLimit.windowMs) {
-    rateLimitStore.set(ip, { count: 1, resetTime: now + CONFIG.rateLimit.windowMs });
+  // 窗口过期即重置。
+  // 注意：这里判断的是「本窗口的起始时间」是否已过期（now - start > windowMs），
+  // 而不是 resetTime（resetTime = start + windowMs）。此前用 now - resetTime > windowMs
+  // 会让窗口实际变成 2×windowMs（实测 60s 配置要等 120s 才解锁），
+  // 并且重置前 retryAfter 会算成负数（"Retry after -12 seconds"）。
+  if (!record || now - record.startTime >= CONFIG.rateLimit.windowMs) {
+    rateLimitStore.set(ip, { count: 1, startTime: now, resetTime: now + CONFIG.rateLimit.windowMs });
     return { allowed: true, remaining: CONFIG.rateLimit.maxRequests - 1 };
   }
   
   if (record.count >= CONFIG.rateLimit.maxRequests) {
-    return { allowed: false, retryAfter: Math.ceil((record.resetTime - now) / 1000) };
+    return { allowed: false, retryAfter: Math.max(1, Math.ceil((record.resetTime - now) / 1000)) };
   }
   
   record.count++;
   return { allowed: true, remaining: CONFIG.rateLimit.maxRequests - record.count };
 }
 
-// 定期清理过期记录
+// 定期清理过期记录（按窗口起始时间判断，与 checkRateLimit 保持一致）
 setInterval(() => {
   const now = Date.now();
   for (const [ip, record] of rateLimitStore.entries()) {
-    if (now - record.resetTime > CONFIG.rateLimit.windowMs) {
+    if (now - record.startTime >= CONFIG.rateLimit.windowMs) {
       rateLimitStore.delete(ip);
     }
   }
@@ -318,7 +323,11 @@ function getClientIP(req) {
 // CORS 头设置
 function setCORSHeaders(res, origin) {
   res.setHeader('Access-Control-Allow-Origin', CONFIG.corsOrigins === '*' ? '*' : origin || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  // 必须包含 POST：/api/cookie 是 POST + JSON（非简单请求），浏览器会先发预检，
+  // 并校验 Access-Control-Request-Method: POST 是否在 Allow-Methods 里。
+  // 少了 POST 的后果是预检被拦 → 扫码登录/保存 Cookie 全部静默失败，
+  // sidecar 侧 CONFIG.cookies 永远停在启动时读到的旧值。
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Netease-Cookie, X-Tencent-Cookie, X-Kugou-Cookie, X-Kuwo-Cookie, X-Baidu-Cookie');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -765,6 +774,13 @@ async function handleSong(req, res, query) {
   let m;
   try {
     m = await createMetingInstance(platform);
+    // 必须注入平台 Cookie：VIP/版权歌曲在未登录态下会返回试听片段或空数据。
+    // 此前 handleSong/handleAlbum/handleArtist 三个忘了这一步，而同类的
+    // search/url/lyric/pic/download 都注入了 —— 表现是「搜索结果能播，
+    // 但从歌曲详情/专辑/歌手页点进去拿不到完整信息」。
+    const platformCookie = getPlatformCookie(req, platform);
+    if (platformCookie) m.cookie(platformCookie);
+
     const rawResult = await withTimeout(m.song(songId));
     const data = safeJSONParse(rawResult);
 
@@ -786,6 +802,10 @@ async function handleAlbum(req, res, query) {
   let m;
   try {
     m = await createMetingInstance(platform);
+    // 同 handleSong：专辑详情里的曲目对 VIP 用户才有完整信息
+    const platformCookie = getPlatformCookie(req, platform);
+    if (platformCookie) m.cookie(platformCookie);
+
     const rawResult = await withTimeout(m.album(albumId));
     const data = safeJSONParse(rawResult);
 
@@ -807,6 +827,10 @@ async function handleArtist(req, res, query) {
   let m;
   try {
     m = await createMetingInstance(platform);
+    // 同 handleSong：歌手页曲目列表同样受登录态影响
+    const platformCookie = getPlatformCookie(req, platform);
+    if (platformCookie) m.cookie(platformCookie);
+
     const rawResult = await withTimeout(m.artist(artistId, Math.min(parseInt(limit), 100)));
     const data = safeJSONParse(rawResult);
 
@@ -820,20 +844,198 @@ async function handleArtist(req, res, query) {
   }
 }
 
+// ============================================
+// 📋 歌单分页：进程内短缓存（翻页不再回源整张歌单）
+// ============================================
+const PLAYLIST_PAGE_SIZE_DEFAULT = 30;
+const PLAYLIST_PAGE_SIZE_MAX = 100;
+const PLAYLIST_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+const PLAYLIST_CACHE_MAX = 64;            // 最多缓存 64 张歌单，防内存膨胀
+
+const playlistCache = new Map();     // key → { data, builtAt }
+const playlistInflight = new Map();  // key → Promise（防并发重复构建）
+
+function readPlaylistCache(key) {
+  const hit = playlistCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.builtAt >= PLAYLIST_CACHE_TTL) {
+    playlistCache.delete(key);
+    return null;
+  }
+  // LRU：命中后移到队尾
+  playlistCache.delete(key);
+  playlistCache.set(key, hit);
+  return hit.data;
+}
+
+function writePlaylistCache(key, data) {
+  playlistCache.set(key, { data, builtAt: Date.now() });
+  while (playlistCache.size > PLAYLIST_CACHE_MAX) {
+    const oldest = playlistCache.keys().next().value;
+    if (oldest === undefined) break;
+    playlistCache.delete(oldest);
+  }
+}
+
+async function buildCachedPlaylist(key, builder) {
+  const cached = readPlaylistCache(key);
+  if (cached) return cached;
+  const pending = playlistInflight.get(key);
+  if (pending) return pending;
+  const task = (async () => {
+    try {
+      const data = await builder();
+      writePlaylistCache(key, data);
+      return data;
+    } finally {
+      playlistInflight.delete(key);
+    }
+  })();
+  playlistInflight.set(key, task);
+  return task;
+}
+
+/**
+ * 网易云歌单索引：eapi 只取「元信息 + trackIds」（不返回全量歌曲），
+ * 歌曲详情留到按页批量取，避免单次响应带上 600+ 首。
+ */
+async function buildNeteasePlaylistIndex(req, playlistId) {
+  const json = await neteaseEapiRequest(req, '/api/v6/playlist/detail', {
+    id: playlistId, n: 1000, s: 8, ext: 'true',
+  });
+  const pl = json && json.playlist;
+  if (!pl) throw new Error(`netease playlist detail failed (code=${json && json.code})`);
+
+  const trackIds = [];
+  const seen = new Set();
+  const pushId = (v) => {
+    const raw = v && typeof v === 'object' ? v.id : v;
+    const id = raw != null ? String(raw) : '';
+    if (id && !seen.has(id)) { seen.add(id); trackIds.push(id); }
+  };
+  (pl.trackIds || []).forEach(pushId);
+  (pl.tracks || []).forEach((t) => pushId(t && t.id));
+
+  return {
+    id: String(pl.id != null ? pl.id : playlistId),
+    name: pl.name || '',
+    cover: pl.coverImgUrl || '',
+    description: pl.description || '',
+    trackIds,
+    tracks: null, // null = 详情按页现取（网易云）
+  };
+}
+
+/** 网易云按 id 批量取歌曲详情（一次 30 首 → 响应约 6KB，而不是 94KB） */
+async function fetchNeteaseSongsByIds(req, ids) {
+  const numeric = ids.filter((id) => /^\d+$/.test(String(id)));
+  if (numeric.length === 0) return [];
+  const json = await neteaseEapiRequest(req, '/api/v3/song/detail', {
+    c: JSON.stringify(numeric.map((id) => ({ id: Number(id), v: 0 }))),
+  });
+  const songs = Array.isArray(json.songs) ? json.songs.map(normalizeNeteaseSong) : [];
+  const byId = new Map(songs.map((s) => [String(s.id), s]));
+  // 保持歌单原始顺序；上游未返回的（下架/无版权）跳过
+  return ids.map((id) => byId.get(String(id))).filter(Boolean);
+}
+
+/** 其他平台兜底：meting 取完整列表（结果进缓存，翻页只做内存切片） */
+async function getMetingFullPlaylist(req, platform, playlistId) {
+  // 缓存值形状固定为 { id, name, cover, description, tracks }
+  return buildCachedPlaylist(
+    `${platform}:${playlistId}:metingfull`,
+    async () => {
+      const m = await createMetingInstance(platform);
+      // 注入平台 Cookie：私密歌单 / 版权受限曲目需要登录态才完整可见
+      const platformCookie = getPlatformCookie(req, platform);
+      if (platformCookie) m.cookie(platformCookie);
+      const rawResult = await withTimeout(m.playlist(playlistId));
+      const parsed = safeJSONParse(rawResult);
+      const tracks = Array.isArray(parsed)
+        ? parsed
+        : (parsed && Array.isArray(parsed.data) ? parsed.data : []);
+      return { id: playlistId, name: '', cover: '', description: '', tracks };
+    },
+  );
+}
+
+/**
+ * 取歌单索引：网易云优先 eapi（trackIds + 元信息），失败或其他平台回退 meting 全量。
+ * 返回 { id, name, cover, description, trackIds, tracks }；
+ * tracks 为数组时表示可直接内存切片，为 null 表示歌曲详情需按页现取。
+ */
+async function getPlaylistIndex(req, platform, playlistId) {
+  if (platform === 'netease') {
+    try {
+      // 缓存值形状固定为 netease 索引
+      return await buildCachedPlaylist(`${platform}:${playlistId}:index`, async () => {
+        const idx = await buildNeteasePlaylistIndex(req, playlistId);
+        if (idx.trackIds.length === 0) throw new Error('empty trackIds');
+        return idx;
+      });
+    } catch (err) {
+      console.warn(`[Playlist] netease eapi 索引失败，回退 meting: ${err.message}`);
+    }
+  }
+  const full = await getMetingFullPlaylist(req, platform, playlistId);
+  return {
+    id: full.id, name: full.name, cover: full.cover, description: full.description,
+    trackIds: full.tracks.map((t) => String(t.id)),
+    tracks: full.tracks,
+  };
+}
+
 // GET /playlist — 获取歌单内容
+//   ?server=&id=                       → 兼容旧行为：data 为完整歌曲数组
+//   ?server=&id=&page=&limit=          → 分页：data/tracks 为本页切片，另有 total/page/limit/hasMore
 async function handlePlaylist(req, res, query) {
   const { server: platform, id: playlistId } = query;
   if (!platform || !playlistId) return errorResponse(res, 400, 'Missing required parameters');
 
-  let m;
-  try {
-    m = await createMetingInstance(platform);
-    const rawResult = await withTimeout(m.playlist(playlistId));
-    const data = safeJSONParse(rawResult);
+  const wantsPaging = query.page !== undefined || query.limit !== undefined;
 
-    jsonResponse(res, 200, {
+  try {
+    if (!wantsPaging) {
+      // 向后兼容：不传分页参数时保持旧语义（data = 整个歌单），只是多挂了元信息字段
+      const full = await getMetingFullPlaylist(req, platform, playlistId);
+      const tracks = full.tracks;
+      return jsonResponse(res, 200, {
+        success: true, platform, playlist_id: playlistId,
+        id: full.id, name: full.name, cover: full.cover, description: full.description,
+        trackCount: tracks.length,
+        page: 1, limit: tracks.length, total: tracks.length, hasMore: false,
+        data: tracks, tracks,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const page = Math.max(parseInt(query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(query.limit, 10) || PLAYLIST_PAGE_SIZE_DEFAULT, 1),
+      PLAYLIST_PAGE_SIZE_MAX,
+    );
+
+    const index = await getPlaylistIndex(req, platform, playlistId);
+    const total = index.trackIds.length;
+    const start = (page - 1) * limit;
+    const pageIds = index.trackIds.slice(start, start + limit);
+    // 单页结果同样短缓存 + inflight 去重（StrictMode 双请求/来回翻页不会重复回源）
+    const tracks = await buildCachedPlaylist(
+      `${platform}:${playlistId}:page:${page}:${limit}`,
+      async () => (index.tracks
+        ? index.tracks.slice(start, start + limit)  // 通用平台：服务端内存切片
+        : await fetchNeteaseSongsByIds(req, pageIds)), // 网易云：按页批量取详情
+    );
+
+    return jsonResponse(res, 200, {
       success: true, platform, playlist_id: playlistId,
-      data, timestamp: new Date().toISOString(),
+      id: index.id, name: index.name, cover: index.cover, description: index.description,
+      trackCount: total,
+      page, limit, total,
+      hasMore: start + limit < total, // 位置语义：是否还有下一页
+      data: tracks,   // 后向兼容：仍是歌曲数组（本页切片，不再是全量）
+      tracks,
+      timestamp: new Date().toISOString(),
     });
   } catch (err) {
     console.error(`[Playlist Error] ${platform}/${playlistId}:`, err.message);
@@ -3454,7 +3656,7 @@ const server = http.createServer(async (req, res) => {
         { path: '/song',     method: 'GET', params: 'server, id(songID)', example: '/song?server=netease&id=35847388' },
         { path: '/album',    method: 'GET', params: 'server, id(albumID)', example: '/album?server=netease&id=12345' },
         { path: '/artist',   method: 'GET', params: 'server, id(artistID), limit?', example: '/artist?server=netease&id=6452&limit=30' },
-        { path: '/playlist', method: 'GET', params: 'server, id(playlistID)', example: '/playlist?server=netease&id=71384714' },
+        { path: '/playlist', method: 'GET', params: 'server, id(playlistID), page?, limit?(max 100)', example: '/playlist?server=netease&id=71384714&page=1&limit=30' },
         { path: '/health',   method: 'GET', params: '-', description: '服务状态 & 运行信息' },
       ],
 

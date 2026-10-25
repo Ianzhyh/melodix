@@ -367,25 +367,56 @@ export function getProxiedAudioUrl(url: string): string {
 }
 
 // 4.6: getPlaylist
+// 分页语义：page 从 1 开始；sidecar 返回本页切片 + total/page/limit/hasMore。
+// 兼容旧响应（裸数组 data = 整个歌单，或未支持分页的 sidecar）：此时视为「一页装下全部」。
 export async function getPlaylist(id: string, server: string = 'netease', page: number = 1, limit: number = 30): Promise<PlaylistDetail | null> {
   try {
     if (server === 'tencent') {
       return await getTencentPlaylist(id, page, limit);
     }
     const headers = getHeaders(server);
-    const json = await request<any>(`/playlist?server=${server}&id=${id}`, { headers });
-    const data = json.data || json;
+    const json = await request<any>(
+      `/playlist?server=${encodeURIComponent(server)}&id=${encodeURIComponent(id)}&page=${page}&limit=${limit}`,
+      { headers },
+    );
+
+    // 歌单元信息：新版在顶层；旧版把歌单对象放在 data 里
+    const meta = (!Array.isArray(json.data) && json.data && typeof json.data === 'object') ? json.data : json;
+
+    // 本页歌曲：新版优先 tracks；旧版 data 为裸数组即整个歌单；再兼容 data.tracks 对象形态
+    const rawTracks: any[] = Array.isArray(json.tracks)
+      ? json.tracks
+      : Array.isArray(json.data)
+        ? json.data
+        : Array.isArray(meta.tracks)
+          ? meta.tracks
+          : Array.isArray(json)
+            ? json
+            : [];
+
+    // 总数：新版 total/trackCount；旧版 data.trackCount；都没有时只能用本页长度兜底
+    const rawTotal = json.total ?? json.trackCount ?? meta.total ?? meta.trackCount;
+    const total = typeof rawTotal === 'number' && rawTotal >= 0 ? rawTotal : rawTracks.length;
+
+    // 兜底：若对端是「不支持分页的旧 sidecar」（响应无 page 字段却一次性返回超过 limit 首），
+    // 在此按请求页做本地切片，保证首屏渲染量不超过一页。total 仍取整单长度，分页 UI 正常。
+    const serverPaginated = typeof json.page === 'number';
+    const needsLocalSlice = !serverPaginated && rawTracks.length > limit;
+    const pageTracks = needsLocalSlice
+      ? rawTracks.slice((page - 1) * limit, (page - 1) * limit + limit)
+      : rawTracks;
+
     return {
-      id: data.id || id,
-      name: data.name || data.title || 'Unknown Playlist',
-      cover: data.cover || '',
-      description: data.description || '',
-      trackCount: data.trackCount || (Array.isArray(data.tracks) ? data.tracks.length : 0),
-      tracks: Array.isArray(data.tracks) ? data.tracks.map((item: any) => normalizeSong(item, server)) : [],
+      id: String(json.id || meta.id || id),
+      name: json.name || meta.name || meta.title || 'Unknown Playlist',
+      cover: json.cover || meta.cover || '',
+      description: json.description || meta.description || '',
+      trackCount: total,
+      tracks: pageTracks.map((item: any) => normalizeSong(item, server)),
       source: server,
-      page: 1,
-      limit: data.trackCount || (Array.isArray(data.tracks) ? data.tracks.length : 0),
-      total: data.trackCount || (Array.isArray(data.tracks) ? data.tracks.length : 0),
+      page: typeof json.page === 'number' ? json.page : page,
+      limit: typeof json.limit === 'number' ? json.limit : limit,
+      total,
     };
   } catch {
     return null;

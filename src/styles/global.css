@@ -158,6 +158,52 @@ button:disabled {
   to { transform: rotate(360deg); }
 }
 
+/* ---------- 统一加载指示器（点歌 / 缓冲 / 行内） ----------
+   见 src/components/common/LoadingSpinner.tsx。
+
+   设计要点：默认延迟 120ms 才淡入。点本地歌或已缓存歌曲常常 50ms 内就加载完，
+   若立刻显示转圈会"闪一下"，看起来像故障。延迟后：快加载用户完全看不到，
+   慢加载（在线取 URL + 缓冲）自然浮现。用 CSS 而非 JS 定时器，无需额外 state。
+
+   动画只做 rotate（合成层友好）；`prefers-reduced-motion` 下关闭旋转只留淡入。 */
+.melodix-spinner {
+  display: inline-block;
+  box-sizing: border-box;
+  border-style: solid;
+  border-radius: 50%;
+  border-color: var(--spinner-track, rgba(255, 255, 255, 0.18));
+  border-top-color: var(--spinner-color, currentColor);
+  flex-shrink: 0;
+  opacity: 0;
+  animation:
+    melodix-spinner-in 0.18s ease-out 0.12s forwards,
+    spin 0.7s linear infinite;
+}
+/* 立即显示（例如已知必然耗时的场景） */
+.melodix-spinner-immediate {
+  animation:
+    melodix-spinner-in 0.12s ease-out forwards,
+    spin 0.7s linear infinite;
+}
+@keyframes melodix-spinner-in {
+  to { opacity: 1; }
+}
+html[data-theme="light"] .melodix-spinner {
+  border-color: var(--spinner-track, rgba(15, 23, 42, 0.18));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .melodix-spinner,
+  .melodix-spinner-immediate {
+    animation: melodix-spinner-in 0.18s ease-out forwards;
+  }
+}
+
+/* 列表行正在加载：行内高亮 + 阻止重复点击的指针态 */
+.melodix-row-loading {
+  cursor: progress !important;
+}
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;

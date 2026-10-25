@@ -902,8 +902,19 @@ fn main() {
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let _menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
-            let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+            let mut tray_builder = TrayIconBuilder::new();
+            // 托盘图标缺省时不要让整个应用崩溃：原来这里是
+            // `.icon(app.default_window_icon().unwrap().clone())`，
+            // 而 `default_window_icon()` 在图标缺失/资源未打包时会返回 None，
+            // unwrap 直接把 panic 抛在 setup 里 —— 主窗口都还没出来，用户只看到闪退。
+            // 托盘只是附加入口，取不到图标就跳过它，应用主体照样可用。
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            } else {
+                eprintln!("[tray] 未找到默认窗口图标，托盘将不显示图标");
+            }
+
+            let _tray = tray_builder
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| match event {
                     TrayIconEvent::Click {

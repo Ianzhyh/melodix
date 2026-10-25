@@ -1811,6 +1811,10 @@
    ============================================================ */
 
 /* ---------- 密度与圆角变量 ---------- */
+/* 行高基准：--c + --hm-row-chrome。
+   实测 1×1 卡片自然高 = 封面(--c) + 折叠后的 margin 12 + 文字 42 = --c + 54。
+   跨行卡（2×1 / 1×2 / 2×2）的内联公式引用同一变量，保证底边落在网格线上；
+   改文字块高度或封面下边距时必须同步改这里。 */
 .home-page {
   --hm-gap: 16px;
   --hm-section-gap: 40px;
@@ -1818,6 +1822,7 @@
   --hm-row-gap: 20px;
   --hm-col-gap: 16px;
   --hm-radius: 12px;
+  --hm-row-chrome: 54px;
 }
 .home-page.density-compact {
   --hm-gap: 12px;
@@ -1841,7 +1846,23 @@
 .home-page .quick-grid { gap: var(--hm-gap); margin-bottom: var(--hm-section-gap); }
 .home-page .track-grid { gap: 10px var(--hm-gap); margin-bottom: var(--hm-section-gap); }
 .home-page .hscroll { margin-bottom: var(--hm-section-gap); }
-.home-page .hero-banner { margin-bottom: var(--hm-section-gap); }
+/* 今日推荐区：区块间距挂到网格本身。
+   此前写在 .hero-banner 上（网格单元内部），在 align-items:start 下会把
+   .hero-main-card 撑到「横幅高 + 40px」，既抬高了整行轨道、又让横幅底边比
+   同排小卡高 24.59px（横幅另外还叠一层 .hero-grid 的 48px，共 88px 空隙）。
+   改为：网格吃区块间距，横幅拉伸填满本行轨道，底边与同排小卡齐平（0.00px）。
+
+   注意 aspect-ratio 必须置为 auto：横幅带 aspect-ratio:1.9/1 时，
+   高度一旦被拉伸就会反过来决定宽度，会把 .hero-grid 的列宽从
+   434.3/197.4 挤成 481.0/185.7，连带把同排小卡的封面从 197.42px 压到
+   185.73px（实测回归）。置 auto 后列宽与卡片尺寸保持原值。 */
+.home-page .hero-grid { margin-bottom: var(--hm-section-gap); }
+.home-page .hero-main-card { align-self: stretch; }
+.home-page .hero-main-card .hero-banner {
+  height: 100%;
+  margin-bottom: 0;
+  aspect-ratio: auto;
+}
 /* 圆角作用到所有封面容器与横幅 */
 .home-page .card-container,
 .home-page .pl-cover,

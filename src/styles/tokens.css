@@ -30,6 +30,16 @@
   --acrylic-blur: blur(32px);
   --acrylic-saturate: saturate(1.2);
 
+  /* 弹窗「Heavy 玻璃」——对齐 DESIGN-REVIEW.md §5.1 的规格：
+     低 alpha 底 + blur(80px) saturate(1.8) + 高光边框。
+     之前弹窗卡片为了性能改成了全不透明纯色，规范没跟上（文档落后于实现）；
+     这里把规范里的 Heavy 档补成正式令牌，供所有弹窗共用。
+     注意：仅用于「卡片」；全屏遮罩保持纯色（见 useGlassWhileIdle 注释）。 */
+  --modal-glass-bg: rgba(15, 18, 35, 0.42);
+  --modal-glass-blur: blur(80px);
+  --modal-glass-saturate: saturate(1.8);
+  --modal-glass-border: rgba(255, 255, 255, 0.12);
+
   --blur-sm:           blur(8px);
   --blur-md:           blur(20px);
   --blur-lg:           blur(40px);
@@ -130,6 +140,12 @@ html[data-theme="light"] {
   --settings-card-backdrop: var(--blur-lg);
 
   --acrylic-tint:          rgba(255, 255, 255, 0.65);
+
+  /* 弹窗 Heavy 玻璃（浅色模式）：白底半透明，否则深色 tint 会在白主题下发灰发脏 */
+  --modal-glass-bg:        rgba(255, 255, 255, 0.62);
+  --modal-glass-blur:      blur(60px);
+  --modal-glass-saturate:  saturate(1.6);
+  --modal-glass-border:    rgba(15, 23, 42, 0.08);
 
   /* 语义化图标/表面 token（浅色模式） */
   --color-icon:           rgba(15,23,42,0.7);
