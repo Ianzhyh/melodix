@@ -10,6 +10,14 @@ class AudioEngineClass {
   private playRequestId: number = 0;
   private currentPlayId: number = 0;
   private _currentUrl: string = '';
+  /**
+   * 自动切歌时由引擎「认领」的歌曲 id。
+   * 'ended' 处理器会自己取下一首的 URL 并 play()；同时 current 变化也会触发
+   * PlayerBar 的加载 effect。后者若不退让，就会用 pause()+prepare() 把刚起的播放打断
+   * （表现为"自动切下一首后不自动播放"）。引擎在开始取 URL 前同步写入该 id，
+   * PlayerBar 据此让位；歌曲真正打开播放或换歌时清除。
+   */
+  private engineClaimedSongId: string | null = null;
   private lastTimeUpdate: number = 0;
   private lastProgressPersist: number = 0;
   private pendingSeek: number | null = null;
@@ -308,14 +316,23 @@ class AudioEngineClass {
       } else if (newState.current && !newState.current.isLocal && !newState.current.filePath) {
         // 当前歌曲已切换：在线歌曲由引擎重新获取下一首 URL 并播放（本地歌曲由 PlayerBar 处理文件源）
         const nextSong = newState.current;
+        // 立刻（同步、在任何 await 之前）认领这首歌，宣告"自动切歌由引擎负责"。
+        // PlayerBar 的 current 副作用稍后会跑，看到认领标记就让位；否则它会
+        // AudioEngine.pause() + prepare()（只装载不播放）把这里刚起的播放打回暂停，
+        // 表现就是"自动切到下一首、加载完了但不自动播放"。
+        this.engineClaimedSongId = nextSong.id;
         try {
           const server = nextSong.onlineSource || nextSong.source || 'netease';
           const { url } = await api.getUrl(nextSong.id, server);
           if (url && usePlaybackStore.getState().current === nextSong) {
             await this.play(url);
+          } else {
+            // 取不到 URL，或用户已切到别的歌：交还给 PlayerBar 处理，别让认领把加载卡死
+            this.engineClaimedSongId = null;
           }
         } catch {
           // 取 URL 失败时保持现有状态，由 PlayerBar 的 current 副作用继续处理
+          this.engineClaimedSongId = null;
         }
       }
     });
@@ -564,9 +581,43 @@ class AudioEngineClass {
     return this.playRequestId;
   }
 
+  /**
+   * 这首歌是否已被引擎认领（自动切歌由引擎负责加载并播放）。
+   * PlayerBar 用它判断是否应该让位，避免 pause()+prepare() 打断引擎刚起的播放。
+   *
+   * 只对「自动切歌」成立：手动点歌走 setQueue，不经过 'ended' 处理器，不会被认领，
+   * 因此手动点歌仍由 PlayerBar 正常加载。
+   */
+  public hasClaimed(songId: string | undefined | null): boolean {
+    return !!songId && this.engineClaimedSongId === songId;
+  }
+
+  /** 释放认领（由 PlayerBar 在让位处理后调用，保证只让位一次） */
+  public releaseClaim(songId: string | undefined | null): void {
+    if (!songId || this.engineClaimedSongId === songId) {
+      this.engineClaimedSongId = null;
+    }
+  }
+
   /** 用户最近的播放意图（暂停=false，播放=true），用于加载完成后的竞态决策 */
   public getUserWantsPlay(): boolean {
     return this.userWantsPlay;
+  }
+
+  /**
+   * 引擎当前是否正在播放（且有已装载的音源）。
+   *
+   * 用途：自动切歌时 AudioEngine 的 'ended' 处理器会自行取下一首并 play()，
+   * 而 current 变化也会触发 PlayerBar 的加载 effect。后者若照常执行
+   * AudioEngine.pause() + prepare()，就会把引擎刚起的播放打断，表现为
+   * "下一首加载完了但不自动播放"。调用方用它判断「引擎已经在放这首歌了」从而让位。
+   *
+   * 注意：调用方（PlayerBar）在此之前已经换到 `current.id !== lastTrackId` 的新分支，
+   * 因此"引擎正在播放"就等于"引擎自己刚起的这首新歌"；手动点歌时引擎状态与之不符
+   * （点歌走 setQueue，而这首歌还没被装载过）。
+   */
+  public isActivelyPlaying(): boolean {
+    return !this.audio.paused && !!this.audio.src && !!this._currentUrl;
   }
 
   public setVolume(v: number): void {
