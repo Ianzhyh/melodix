@@ -5,6 +5,7 @@ import type { Song } from '../types/playback';
 import { useConfigStore } from './configStore';
 import { useToastStore } from './toastStore';
 import * as api from '../api/client';
+import { makeId } from '../utils/id';
 
 export type DownloadStatus = 'pending' | 'downloading' | 'paused' | 'completed' | 'failed' | 'canceled';
 
@@ -51,7 +52,7 @@ function buildDownloadTask(
   streamingQuality: 'standard' | 'high' | 'lossless',
 ): DownloadTask {
   return {
-    id: crypto.randomUUID(),
+    id: makeId('dl'),
     song,
     url: api.getDownloadUrl(song.source || 'netease', song.id, api.qualityToApiParam(streamingQuality)),
     filename: `${sanitizeFilename(song.name)}.mp3`,

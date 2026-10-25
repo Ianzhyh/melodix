@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Song } from '../types/playback';
 import { useToastStore } from './toastStore';
+import { makeId } from '../utils/id';
 
 // 自定义音乐库：用户自建的音乐库（歌单），持久化在 localStorage。
 // 与 favoriteStore 一致：整份数据随状态同步维护，每次变更后写回 localStorage。
@@ -43,14 +44,6 @@ function persist(libraries: UserLibrary[]) {
   } catch {}
 }
 
-function makeId(): string {
-  // 与 downloadStore 一致使用 crypto.randomUUID
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `lib-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 interface CustomLibraryState {
   libraries: UserLibrary[];
   createLibrary: (name: string) => string;
@@ -74,7 +67,7 @@ export const useCustomLibraryStore = create<CustomLibraryState>((set, get) => ({
     const trimmed = name.trim();
     if (!trimmed) return '';
     const library: UserLibrary = {
-      id: makeId(),
+      id: makeId('lib'),
       name: trimmed,
       songs: [],
       createdAt: Date.now(),

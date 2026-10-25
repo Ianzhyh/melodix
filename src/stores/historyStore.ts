@@ -82,12 +82,26 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   },
 }));
 
-// 模块级订阅：current 引用变化且非空即记一次播放。
-// 单曲循环重播（next 的 repeat-one 分支）不更换 current 引用，因此不会重复计数。
+// 模块级订阅：切歌时记一次播放。
+//
+// 判定必须按 **song.id** 而不是对象引用 —— 原来写的是 `cur !== prev.current`，
+// 而「本地歌曲补齐封面/歌词」这条链路会造一个同 id 的新对象写回 store：
+//   PlayerBar/index.tsx  usePlaybackStore.setState({ current: { ...latest, lyrics: ... } })
+// 引用变了、歌没变，却被当成换歌 → 播放次数被静默 +1（批量补齐 10 首时能 +1~+10），
+// 该歌还被顶到「最近播放」首位。这是用户不会立刻察觉、但数据持续失真的问题。
+//
+// 单曲循环重播（next 的 repeat-one 分支）本就不更换 current，按 id 比较同样不会重复计数。
 // 本模块仅被主窗口页面链路加载（tray.tsx 入口不引用），托盘窗口不会重复记录。
-usePlaybackStore.subscribe((state, prev) => {
+let lastRecordedSongId: string | null = null;
+
+usePlaybackStore.subscribe((state) => {
   const cur = state.current;
-  if (cur && cur !== prev.current) {
-    useHistoryStore.getState().recordPlay(cur);
+  if (!cur) {
+    // 队列清空/停止后重置，保证"再播一次同一首"仍然会记一次
+    lastRecordedSongId = null;
+    return;
   }
+  if (cur.id === lastRecordedSongId) return;
+  lastRecordedSongId = cur.id;
+  useHistoryStore.getState().recordPlay(cur);
 });

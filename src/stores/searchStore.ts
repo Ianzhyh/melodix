@@ -15,11 +15,13 @@ interface SearchState {
   page: number;            // 当前已加载的页码（从 1 开始）
   hasMore: boolean;        // 是否还有更多结果可加载
   loadingMore: boolean;    // 是否正在加载下一页
+  loadMoreFailed: boolean; // 上一页加载失败：停止哨兵自动重试，改为让用户点"重试"
   currentKeywords: string; // 当前搜索关键词，供 loadMore / 切换 Tab 复用
   setPlatform: (platform: string) => void;
   setSearchType: (type: SearchTabType) => void;
   search: (keywords: string) => Promise<void>;
   loadMore: () => Promise<void>;
+  retryLoadMore: () => void;
   clearResults: () => void;
 }
 
@@ -41,6 +43,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   page: 1,
   hasMore: false,
   loadingMore: false,
+  loadMoreFailed: false,
   currentKeywords: '',
   platform: (() => {
     try {
@@ -109,9 +112,12 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     }
   },
   loadMore: async () => {
-    const { hasMore, loadingMore, currentKeywords, platform, page, searchType } = get();
-    // 仅单曲 Tab 分页；无更多内容、正在加载、或无关键词时直接跳过
-    if (searchType !== 'song' || !hasMore || loadingMore || !currentKeywords) return;
+    const { hasMore, loadingMore, loadMoreFailed, currentKeywords, platform, page, searchType } = get();
+    // 仅单曲 Tab 分页；无更多内容、正在加载、或无关键词时直接跳过。
+    // loadMoreFailed 时也不再自动加载：失败后 hasMore 仍为 true、哨兵仍在视口内，
+    // 不拦住的话 IntersectionObserver 会以每次渲染一次的频率无限重试同一个失败请求
+    // （用户看到的表现是"加载中..."一直转，实际背后已打了几十个请求）。
+    if (searchType !== 'song' || !hasMore || loadingMore || loadMoreFailed || !currentKeywords) return;
     // 取消上一次未完成的 loadMore 请求
     loadMoreAbortController?.abort();
     const controller = new AbortController();
@@ -125,15 +131,21 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         searchResults: [...prev, ...result.songs],
         page: page + 1,
         loadingMore: false,
+        loadMoreFailed: false,
         hasMore: result.songs.length >= PAGE_SIZE,
       });
     } catch (err: any) {
       // 被新请求取消时静默忽略
       if (err?.name === 'AbortError') return;
-      set({ loadingMore: false });
-      // 不强行打断用户，仅控制台提示
-      console.warn('[searchStore] loadMore failed:', err?.message || err);
+      // 原来只 console.warn 就结束：界面上"加载中"消失、什么都没有发生，
+      // 用户会以为已经到底了。现在置失败标记 + 交给 UI 显示"重试"。
+      set({ loadingMore: false, loadMoreFailed: true });
     }
+  },
+  /** 用户点击"重试"后重新尝试加载下一页（清掉失败标记再走一次 loadMore） */
+  retryLoadMore: () => {
+    set({ loadMoreFailed: false });
+    void get().loadMore();
   },
   clearResults: () => {
     searchAbortController?.abort();
@@ -148,6 +160,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       page: 1,
       hasMore: false,
       loadingMore: false,
+      loadMoreFailed: false,
       currentKeywords: '',
     });
   },

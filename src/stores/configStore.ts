@@ -1,4 +1,13 @@
 import { create } from 'zustand';
+import {
+  readStored,
+  writeStored,
+  parseEnum,
+  parseBool,
+  parseIntClamped,
+  parseString,
+  parseJSONObject,
+} from './persisted';
 
 export interface PlatformCookies {
   tencent?: string;
@@ -46,158 +55,141 @@ interface ConfigState {
   setPlayerBackgroundType: (type: 'static' | 'dynamic') => void;
 }
 
-export const useConfigStore = create<ConfigState>((set) => ({
+// ===== 存储键：集中声明，避免"键名打错一个字就静默失效" =====
+const KEYS = {
+  cookies: 'melodix-cookies',
+  streamingQuality: 'melodix-streaming-quality',
+  downloadPath: 'melodix-download-path',
+  autoDownload: 'melodix-auto-download',
+  theme: 'melodix-theme',
+  transparency: 'melodix-transparency',
+  showTranslationButton: 'melodix-show-translation-button',
+  autoTranslateLyrics: 'melodix-auto-translate-lyrics',
+  maxConcurrentDownloads: 'melodix-max-concurrent-downloads',
+  localLibraryPath: 'melodix-local-library-path',
+  autoImportOnDownload: 'melodix-auto-import-on-download',
+  importMode: 'melodix-import-mode',
+  closeAction: 'melodix-close-action',
+  playerBackgroundType: 'melodix-player-bg-type',
+} as const;
+
+const QUALITIES = ['standard', 'high', 'lossless'] as const;
+const THEMES = ['dark', 'light', 'system'] as const;
+const IMPORT_MODES = ['copy', 'index'] as const;
+const CLOSE_ACTIONS = ['ask', 'minimize', 'exit'] as const;
+const BG_TYPES = ['static', 'dynamic'] as const;
+
+const MIN_CONCURRENT_DOWNLOADS = 1;
+const MAX_CONCURRENT_DOWNLOADS = 10;
+
+/** 持久化的配置项：读取走统一的 readStored（绝不抛），写入走 writeStored（失败也不阻断 set） */
+function persist<T>(key: string, value: T) {
+  writeStored(key, value);
+}
+
+export const useConfigStore = create<ConfigState>((set, get) => ({
   sidecarPort: 3000,
   setSidecarPort: (port) => set({ sidecarPort: port }),
   sidecarStatus: 'idle',
   setSidecarStatus: (status) => set({ sidecarStatus: status }),
   sidecarError: null,
   setSidecarError: (err) => set({ sidecarError: err }),
-  cookies: ((): PlatformCookies => {
-    try {
-      const saved = localStorage.getItem('melodix-cookies');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  })(),
-  setCookie: (platform, cookie) => set((state) => {
-    const newCookies = { ...state.cookies, [platform]: cookie };
-    localStorage.setItem('melodix-cookies', JSON.stringify(newCookies));
-    return { cookies: newCookies };
-  }),
-  streamingQuality: ((): 'standard' | 'high' | 'lossless' => {
-    try {
-      const saved = localStorage.getItem('melodix-streaming-quality');
-      if (saved === 'standard' || saved === 'high' || saved === 'lossless') return saved;
-      return 'high';
-    } catch { return 'high'; }
-  })(),
+
+  cookies: readStored<PlatformCookies>(KEYS.cookies, {}, (raw) =>
+    parseJSONObject<PlatformCookies>(raw, {}),
+  ),
+  setCookie: (platform, cookie) => {
+    const newCookies = { ...get().cookies, [platform]: cookie };
+    persist(KEYS.cookies, newCookies);
+    set({ cookies: newCookies });
+  },
+
+  streamingQuality: readStored(KEYS.streamingQuality, 'high' as const, (raw) =>
+    parseEnum(raw, QUALITIES, 'high'),
+  ),
   setStreamingQuality: (quality) => {
-    localStorage.setItem('melodix-streaming-quality', quality);
+    persist(KEYS.streamingQuality, quality);
     set({ streamingQuality: quality });
   },
-  downloadPath: ((): string => {
-    try {
-      return localStorage.getItem('melodix-download-path') || '';
-    } catch { return ''; }
-  })(),
+
+  downloadPath: readStored(KEYS.downloadPath, '', (raw) => parseString(raw, '')),
   setDownloadPath: (path) => {
-    localStorage.setItem('melodix-download-path', path);
+    persist(KEYS.downloadPath, path);
     set({ downloadPath: path });
   },
-  autoDownload: ((): boolean => {
-    try {
-      return localStorage.getItem('melodix-auto-download') === 'true';
-    } catch { return false; }
-  })(),
+
+  autoDownload: readStored(KEYS.autoDownload, false, (raw) => parseBool(raw, false)),
   setAutoDownload: (auto) => {
-    localStorage.setItem('melodix-auto-download', String(auto));
+    persist(KEYS.autoDownload, auto);
     set({ autoDownload: auto });
   },
+
+  // 侧栏开合不持久化：每次启动都从展开态开始
   sidebarOpen: false,
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
-  theme: ((): 'dark' | 'light' | 'system' => {
-    try {
-      const saved = localStorage.getItem('melodix-theme');
-      if (saved === 'dark' || saved === 'light' || saved === 'system') return saved;
-      return 'system';
-    } catch { return 'system'; }
-  })(),
+
+  theme: readStored(KEYS.theme, 'system' as const, (raw) => parseEnum(raw, THEMES, 'system')),
   setTheme: (theme) => {
-    localStorage.setItem('melodix-theme', theme);
+    persist(KEYS.theme, theme);
     set({ theme });
   },
-  enableTransparency: ((): boolean => {
-    try {
-      const saved = localStorage.getItem('melodix-transparency');
-      return saved !== 'false'; // default true
-    } catch { return true; }
-  })(),
+
+  enableTransparency: readStored(KEYS.transparency, true, (raw) => parseBool(raw, true)),
   setEnableTransparency: (enable) => {
-    localStorage.setItem('melodix-transparency', String(enable));
+    persist(KEYS.transparency, enable);
     set({ enableTransparency: enable });
   },
-  showTranslationButton: ((): boolean => {
-    try {
-      const saved = localStorage.getItem('melodix-show-translation-button');
-      return saved !== 'false'; // default true
-    } catch { return true; }
-  })(),
+
+  showTranslationButton: readStored(KEYS.showTranslationButton, true, (raw) => parseBool(raw, true)),
   setShowTranslationButton: (show) => {
-    localStorage.setItem('melodix-show-translation-button', String(show));
+    persist(KEYS.showTranslationButton, show);
     set({ showTranslationButton: show });
   },
-  autoTranslateLyrics: ((): boolean => {
-    try {
-      return localStorage.getItem('melodix-auto-translate-lyrics') === 'true';
-    } catch { return false; }
-  })(),
+
+  autoTranslateLyrics: readStored(KEYS.autoTranslateLyrics, false, (raw) => parseBool(raw, false)),
   setAutoTranslateLyrics: (auto) => {
-    localStorage.setItem('melodix-auto-translate-lyrics', String(auto));
+    persist(KEYS.autoTranslateLyrics, auto);
     set({ autoTranslateLyrics: auto });
   },
-  maxConcurrentDownloads: ((): number => {
-    try {
-      const saved = localStorage.getItem('melodix-max-concurrent-downloads');
-      if (saved === null) return 3;
-      const n = Number(saved);
-      if (Number.isNaN(n)) return 3;
-      return Math.min(10, Math.max(1, Math.floor(n)));
-    } catch { return 3; }
-  })(),
+
+  maxConcurrentDownloads: readStored(KEYS.maxConcurrentDownloads, 3, (raw) =>
+    parseIntClamped(raw, 3, MIN_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS),
+  ),
   setMaxConcurrentDownloads: (v) => {
-    const clamped = Math.min(10, Math.max(1, Math.floor(v)));
-    localStorage.setItem('melodix-max-concurrent-downloads', String(clamped));
+    const clamped = parseIntClamped(String(v), 3, MIN_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS);
+    persist(KEYS.maxConcurrentDownloads, clamped);
     set({ maxConcurrentDownloads: clamped });
   },
-  localLibraryPath: ((): string => {
-    try {
-      return localStorage.getItem('melodix-local-library-path') || '';
-    } catch { return ''; }
-  })(),
+
+  localLibraryPath: readStored(KEYS.localLibraryPath, '', (raw) => parseString(raw, '')),
   setLocalLibraryPath: (path) => {
-    localStorage.setItem('melodix-local-library-path', path);
+    persist(KEYS.localLibraryPath, path);
     set({ localLibraryPath: path });
   },
-  autoImportOnDownload: ((): boolean => {
-    try {
-      return localStorage.getItem('melodix-auto-import-on-download') === 'true';
-    } catch { return false; }
-  })(),
+
+  autoImportOnDownload: readStored(KEYS.autoImportOnDownload, false, (raw) => parseBool(raw, false)),
   setAutoImportOnDownload: (value) => {
-    localStorage.setItem('melodix-auto-import-on-download', String(value));
+    persist(KEYS.autoImportOnDownload, value);
     set({ autoImportOnDownload: value });
   },
-  importMode: ((): 'copy' | 'index' => {
-    try {
-      const saved = localStorage.getItem('melodix-import-mode');
-      if (saved === 'copy' || saved === 'index') return saved;
-      return 'index';
-    } catch { return 'index'; }
-  })(),
+
+  importMode: readStored(KEYS.importMode, 'index' as const, (raw) => parseEnum(raw, IMPORT_MODES, 'index')),
   setImportMode: (mode) => {
-    localStorage.setItem('melodix-import-mode', mode);
+    persist(KEYS.importMode, mode);
     set({ importMode: mode });
   },
-  closeAction: ((): 'ask' | 'minimize' | 'exit' => {
-    try {
-      const saved = localStorage.getItem('melodix-close-action');
-      if (saved === 'ask' || saved === 'minimize' || saved === 'exit') return saved;
-      return 'ask';
-    } catch { return 'ask'; }
-  })(),
+
+  closeAction: readStored(KEYS.closeAction, 'ask' as const, (raw) => parseEnum(raw, CLOSE_ACTIONS, 'ask')),
   setCloseAction: (action) => {
-    localStorage.setItem('melodix-close-action', action);
+    persist(KEYS.closeAction, action);
     set({ closeAction: action });
   },
-  playerBackgroundType: ((): 'static' | 'dynamic' => {
-    try {
-      const saved = localStorage.getItem('melodix-player-bg-type');
-      if (saved === 'static' || saved === 'dynamic') return saved;
-      return 'dynamic';
-    } catch { return 'dynamic'; }
-  })(),
+
+  playerBackgroundType: readStored(KEYS.playerBackgroundType, 'dynamic' as const, (raw) =>
+    parseEnum(raw, BG_TYPES, 'dynamic'),
+  ),
   setPlayerBackgroundType: (type) => {
-    localStorage.setItem('melodix-player-bg-type', type);
+    persist(KEYS.playerBackgroundType, type);
     set({ playerBackgroundType: type });
   },
 }));

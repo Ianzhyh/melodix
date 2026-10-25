@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { makeId } from '../utils/id';
 
 /**
  * 主页模块化布局 store（DIY 完全体）：
@@ -338,7 +339,7 @@ export const useHomeLayoutStore = create<HomeLayoutState>((set, get) => {
     setDualColumn: (on) => { set({ dualColumn: on }); commit(); },
 
     addCustomTile: (tile) => {
-      const id = `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const id = makeId('ct');
       set({ customTiles: [...get().customTiles, { ...tile, id }] });
       commit();
     },
