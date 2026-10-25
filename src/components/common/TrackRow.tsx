@@ -1,6 +1,8 @@
 import React from 'react';
 import { SelectionCheckbox } from '../SelectionBar';
+import { LoadingSpinner } from './LoadingSpinner';
 import { getSongCoverUrl } from '../../utils/cover';
+import { COVER_PLACEHOLDER, onCoverError } from '../../utils/coverFallback';
 import { formatTime } from '../../api/client';
 import type { Song } from '../../types/playback';
 
@@ -10,6 +12,8 @@ export interface TrackRowProps {
   displayIndex: number | string;
   isCurrent: boolean;
   isPlaying: boolean;
+  /** 当前这首歌正在取播放地址 / 缓冲：行内显示转圈，序号位置让位 */
+  isBuffering?: boolean;
   selectMode: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
@@ -31,12 +35,24 @@ export interface TrackRowProps {
   isDragging?: boolean;
 }
 
+/**
+ * 封面加载失败时的兜底处理见 src/utils/coverFallback.ts（COVER_PLACEHOLDER / onCoverError）。
+ *
+ * 关键点：封面 `<img>` 是 grid 项（模板 `40px 40px 1fr …`，见 TrackList.tsx:23）。
+ * 之前的 `onError` 用 `display: none` 隐藏它，元素被移出 grid，**其后所有列整体左移一个轨道**：
+ * 实测标题列 x 390→336（-54px）、专辑列 777→390（-387px）、时长列 1164→777（-387px）、
+ * action 列 1258→1164（-94px），标题单元格由 373px 塌成 40px，歌名被截成一个字。
+ * 任何封面 404/502（过期 picId 走 `/pic?...`、或 cover 为死链）都会触发。
+ * 换成透明占位图后元素仍占住 40×40 轨道位，列边界不再漂移。
+ */
+
 export const TrackRow = React.memo(function TrackRow({
   song,
   index,
   displayIndex,
   isCurrent,
   isPlaying,
+  isBuffering = false,
   selectMode,
   selected,
   onToggleSelect,
@@ -50,10 +66,12 @@ export const TrackRow = React.memo(function TrackRow({
   isDragging = false,
 }: TrackRowProps) {
   const coverUrl = showCover ? getSongCoverUrl(song, 300) : '';
+  // 正在加载这一行：点歌后到真正出声之间，行内给出即时反馈
+  const rowLoading = isCurrent && isBuffering && !isPlaying;
 
   return (
     <div
-      className={`common-track-row ${isDragging ? 'common-track-dragging' : ''}`}
+      className={`common-track-row ${isDragging ? 'common-track-dragging' : ''} ${rowLoading ? 'melodix-row-loading' : ''}`}
       onClick={() => (selectMode ? onToggleSelect(song.id) : onPlay(song, index))}
       style={{
         display: 'grid',
@@ -68,6 +86,11 @@ export const TrackRow = React.memo(function TrackRow({
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minWidth: 0 }}>
         {selectMode ? (
           <SelectionCheckbox selected={selected} />
+        ) : rowLoading ? (
+          /* 加载中：序号/播放图标让位给转圈，位置与两者一致（同列、居中），不引起跳动 */
+          <span className="common-track-loading" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            <LoadingSpinner size={13} strokeWidth={2} color="var(--color-primary, #6366f1)" />
+          </span>
         ) : (
           <>
             <span className="common-track-index" style={{ fontSize: 13, color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
@@ -86,12 +109,12 @@ export const TrackRow = React.memo(function TrackRow({
 
       {showCover && (
         <img
-          src={coverUrl}
+          src={coverUrl || COVER_PLACEHOLDER}
           alt=""
           loading="lazy"
           decoding="async"
-          onError={(e) => { e.currentTarget.style.display = 'none'; }}
-          style={{ width: 40, height: 40, borderRadius: 6, objectFit: 'cover', background: 'var(--color-img-placeholder, rgba(255,255,255,0.05))', flexShrink: 0 }}
+          onError={onCoverError}
+          style={{ width: 40, height: 40, borderRadius: 6, objectFit: 'cover', background: 'var(--color-img-placeholder, rgba(255,255,255,0.05))', flexShrink: 0, display: 'block' }}
         />
       )}
 
@@ -148,6 +171,8 @@ export const TrackRow = React.memo(function TrackRow({
     prevProps.displayIndex === nextProps.displayIndex &&
     prevProps.isCurrent === nextProps.isCurrent &&
     prevProps.isPlaying === nextProps.isPlaying &&
+    // 必须比较：否则 isBuffering 变化被 memo 挡掉，加载转圈永远不出现
+    prevProps.isBuffering === nextProps.isBuffering &&
     prevProps.selectMode === nextProps.selectMode &&
     prevProps.selected === nextProps.selected &&
     prevProps.isDragging === nextProps.isDragging

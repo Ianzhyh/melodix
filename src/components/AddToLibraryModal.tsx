@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import type { Song } from '../types/playback';
 import { useCustomLibraryStore, type UserLibrary } from '../stores/customLibraryStore';
+import { useToastStore } from '../stores/toastStore';
+import { Modal, ModalButton } from './common/Modal';
 
 interface AddToLibraryModalProps {
   song: Song;
@@ -12,21 +13,16 @@ interface AddToLibraryModalProps {
 // 把歌曲添加到自定义音乐库的通用选择器：
 // - 列出全部音乐库，点击即添加；
 // - 底部支持内联新建音乐库并添加。
-// 通过 portal 渲染到 body，避免被宿主组件（PlayerBar 的位移动画、行 hover 等）
-// 的 transform/opacity 影响 fixed 定位。
+// 弹窗外壳统一走 common/Modal（portal 到 body、纯色遮罩、延后开启玻璃、
+// Escape 广播、焦点管理都在那里实现一次）。
 export function AddToLibraryModal({ song, onClose }: AddToLibraryModalProps) {
   const libraries = useCustomLibraryStore((s) => s.libraries);
   const [name, setName] = useState('');
 
-  // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）：关闭选择器
-  useEffect(() => {
-    const close = () => onClose();
-    window.addEventListener('melodix-close-popups', close);
-    return () => window.removeEventListener('melodix-close-popups', close);
-  }, [onClose]);
-
   const handleAdd = (lib: UserLibrary) => {
     useCustomLibraryStore.getState().addSong(lib.id, song);
+    // 反馈：原来点击后弹窗直接消失，没有任何确认提示，用户无法判断是否加成功
+    useToastStore.getState().showToast(`已添加到「${lib.name}」`, 'success');
     onClose();
   };
 
@@ -36,194 +32,147 @@ export function AddToLibraryModal({ song, onClose }: AddToLibraryModalProps) {
     const id = useCustomLibraryStore.getState().createLibrary(trimmed);
     if (id) {
       useCustomLibraryStore.getState().addSong(id, song);
+      useToastStore.getState().showToast(`已新建「${trimmed}」并添加 1 首`, 'success');
     }
     onClose();
   };
 
-  const rowStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    padding: '10px 12px',
-    borderRadius: 8,
-    cursor: 'pointer',
-    transition: 'background 0.15s',
-  };
-
-  return createPortal(
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.15, ease: 'easeOut' }}
-      onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 'var(--z-confirm)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        // 纯色遮罩替代 backdrop-filter 模糊：避免透明度动画期间逐帧整屏重采样导致卡顿
-        background: 'rgba(0,0,0,0.5)',
-      }}
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="添加到音乐库"
+      description={`${song.name} · ${song.artist || '未知艺术家'}`}
+      width={380}
+      cardStyle={{ padding: 20, gap: 14 }}
+      footer={
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <ModalButton onClick={onClose}>取消</ModalButton>
+        </div>
+      }
     >
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.18, ease: 'easeOut' }}
-        onClick={(e) => e.stopPropagation()}
+      {/* 音乐库列表 */}
+      <div
         style={{
-          width: 380,
-          maxWidth: '90%',
-          background: 'var(--color-bg-elevated, rgba(30,30,30,0.92))',
-          border: '1px solid var(--glass-border, rgba(255,255,255,0.1))',
-          borderRadius: 16,
-          padding: 20,
           display: 'flex',
           flexDirection: 'column',
-          gap: 14,
-          boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
-          color: 'var(--color-text)',
+          gap: 2,
+          maxHeight: 260,
+          overflowY: 'auto',
         }}
       >
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>添加到音乐库</div>
-            <div
-              style={{
-                fontSize: 12,
-                color: 'var(--color-text-dim)',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {song.name} · {song.artist || '未知艺术家'}
-            </div>
-          </div>
-
-          {/* 音乐库列表 */}
+        {libraries.length === 0 ? (
           <div
             style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
-              maxHeight: 260,
-              overflowY: 'auto',
+              textAlign: 'center',
+              padding: '24px 12px',
+              color: 'var(--color-text-faint)',
+              fontSize: 13,
             }}
           >
-            {libraries.length === 0 ? (
-              <div
-                style={{
-                  textAlign: 'center',
-                  padding: '24px 12px',
-                  color: 'var(--color-text-faint)',
-                  fontSize: 13,
-                }}
-              >
-                还没有自定义音乐库，先在下方新建一个
-              </div>
-            ) : (
-              libraries.map((lib) => (
-                <div
-                  key={lib.id}
-                  onClick={() => handleAdd(lib)}
-                  style={rowStyle}
-                  onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLDivElement).style.background =
-                      'var(--color-surface-hover)';
-                  }}
-                  onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLDivElement).style.background = 'transparent';
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 500,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {lib.name}
-                  </span>
-                  <span style={{ fontSize: 12, color: 'var(--color-text-faint)', flexShrink: 0 }}>
-                    {lib.songs.length} 首
-                  </span>
-                </div>
-              ))
-            )}
+            还没有自定义音乐库，先在下方新建一个
           </div>
-
-          {/* 内联新建并添加 */}
-          <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14 }}>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateAndAdd();
-                }}
-                placeholder="新建音乐库名称..."
-                maxLength={40}
-                style={{
-                  flex: 1,
-                  padding: '8px 12px',
-                  background: 'var(--color-hover)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 8,
-                  color: 'var(--color-text)',
-                  fontSize: 13,
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
-                onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--glass-border)')}
-                onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--color-border)')}
-              />
-              <button
-                onClick={handleCreateAndAdd}
-                disabled={!name.trim()}
-                style={{
-                  padding: '0 14px',
-                  borderRadius: 8,
-                  border: 'none',
-                  background: 'var(--color-primary, #6366f1)',
-                  color: '#fff',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: name.trim() ? 'pointer' : 'not-allowed',
-                  opacity: name.trim() ? 1 : 0.6,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                创建并添加
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button
-              onClick={onClose}
-              style={{
-                padding: '8px 20px',
-                borderRadius: 8,
-                border: '1px solid var(--color-border)',
-                background: 'transparent',
-                color: 'var(--color-text)',
-                fontSize: 13,
-                cursor: 'pointer',
+        ) : (
+          libraries.map((lib) => (
+            <div
+              key={lib.id}
+              role="button"
+              tabIndex={0}
+              className="common-lib-pick-row"
+              onClick={() => handleAdd(lib)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleAdd(lib);
+                }
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-surface-hover)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '10px 12px',
+                borderRadius: 8,
+                cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}
             >
-              取消
-            </button>
-          </div>
-        </motion.div>
-    </motion.div>,
-    document.body,
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {lib.name}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--color-text-faint)', flexShrink: 0 }}>
+                {lib.songs.length} 首
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* 内联新建并添加 */}
+      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreateAndAdd();
+            }}
+            placeholder="新建音乐库名称..."
+            maxLength={40}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              background: 'var(--color-hover)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 8,
+              color: 'var(--color-text)',
+              fontSize: 13,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+            onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--glass-border)')}
+            onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--color-border)')}
+          />
+          <button
+            type="button"
+            onClick={handleCreateAndAdd}
+            disabled={!name.trim()}
+            style={{
+              padding: '0 14px',
+              borderRadius: 8,
+              border: 'none',
+              background: 'var(--color-primary, #6366f1)',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: name.trim() ? 'pointer' : 'not-allowed',
+              opacity: name.trim() ? 1 : 0.6,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            创建并添加
+          </button>
+        </div>
+      </div>
+
+      {/* 行 hover 反馈只写一次（原来每行都挂一对 onMouseEnter/onMouseLeave 改内联样式） */}
+      <style>{`
+        .common-lib-pick-row:hover { background: var(--color-surface-hover); }
+        .common-lib-pick-row:focus-visible {
+          outline: 2px solid var(--color-primary, #6366f1);
+          outline-offset: -2px;
+        }
+      `}</style>
+    </Modal>
   );
 }
 

@@ -7,18 +7,21 @@ import { useToastStore } from '../stores/toastStore';
 import { SelectionBar } from './SelectionBar';
 import { TrackList, TrackListHeader } from './common/TrackList';
 import { TrackRow } from './common/TrackRow';
+import { Pagination } from './common/Pagination';
+import { ErrorState, DetailSkeleton } from './common/ListStates';
 import * as api from '../api/client';
 import { getSongCoverUrl } from '../utils/cover';
 import type { PlaylistDetail, RouteState, Song } from '../types/playback';
+import { extractPalette } from '../utils/colorExtractor';
+import { useDismiss } from '../hooks/useDismiss';
+import { popoverGlass } from '../utils/styles';
+import { useConfigStore } from '../stores/configStore';
 
 interface PlaylistViewProps {
   playlistId?: string;
   source?: string;
   onNavigate?: (route: RouteState) => void;
 }
-
-
-import { Vibrant } from 'node-vibrant/browser';
 
 export function PlaylistView({ playlistId, source = 'netease', onNavigate }: PlaylistViewProps) {
   const [playlist, setPlaylist] = useState<PlaylistDetail | null>(null);
@@ -27,11 +30,14 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [jumpInput, setJumpInput] = useState('');
   const PAGE_SIZE = 30;
-  const { setQueue, current, isPlaying } = usePlaybackStore();
+  // 翻页请求序号：只有最新一次请求的结果允许写入 state（防乱序/StrictMode 双跑）
+  const loadSeqRef = useRef(0);
+  const { setQueue, current, isPlaying, isBuffering } = usePlaybackStore();
   const { libraries, createLibrary, addSongs } = useCustomLibraryStore();
   const addTasks = useDownloadStore((s) => s.addTasks);
+  // 「加入音乐库」弹出菜单的玻璃材质需要跟随透明度开关（此前写死丙烯，关掉开关后仍模糊）
+  const enableTransparency = useConfigStore((s) => s.enableTransparency);
   const [libMenuOpen, setLibMenuOpen] = useState(false);
   const [newLibName, setNewLibName] = useState('');
   const [importing, setImporting] = useState(false);
@@ -51,16 +57,11 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
     return () => window.removeEventListener('melodix-close-popups', exitSelectMode);
   }, [exitSelectMode]);
 
-  // Close lib menu on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (libMenuRef.current && !libMenuRef.current.contains(e.target as Node)) {
-        setLibMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  // 「加入音乐库」菜单：点击外部关闭。
+  // 原实现没有 `if (!libMenuOpen) return` 守卫 —— 菜单关着的时候也在文档上常驻
+  // 一个 mousedown 监听，页面上任何一次点击都会执行一次无意义的 setState。
+  // 走 useDismiss 后带上了 open 守卫，并且和 Escape 广播统一。
+  useDismiss(libMenuOpen, libMenuRef, () => setLibMenuOpen(false));
 
   const pageTracks = useMemo(() => playlist?.tracks ?? [], [playlist]);
   const selectedSongs = useMemo(
@@ -106,6 +107,14 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
         ? allToplistSongsRef.current
         : playlist?.tracks ?? [];
       addSongs(libraryId, songs);
+      // 分页歌单只持有当前页：明确告知范围，避免用户以为整单已导入
+      const total = playlist?.total ?? playlist?.trackCount ?? songs.length;
+      if (songs.length > 0 && songs.length < total) {
+        useToastStore.getState().showToast(
+          `已加入当前页 ${songs.length} 首（整单共 ${total} 首，可翻页后继续加入）`,
+          'info',
+        );
+      }
     } finally {
       setImporting(false);
     }
@@ -121,6 +130,8 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
 
   const loadPage = useCallback(async (page: number) => {
     if (!playlistId) return;
+    // 竞态守卫：快速翻页/StrictMode 双执行时，只有最新一次请求允许落地
+    const seq = ++loadSeqRef.current;
     setIsLoading(true);
     setLoadError(null);
     // 切歌单/翻页后可见歌曲集合变化，清空选中避免残留隐藏选择
@@ -133,6 +144,7 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
           songs = await api.getNewSongs(parseInt(playlistId), 100);
           allToplistSongsRef.current = songs;
         }
+        if (seq !== loadSeqRef.current) return;
         const start = (page - 1) * PAGE_SIZE;
         const paged = songs.slice(start, start + PAGE_SIZE);
         setPlaylist({
@@ -147,7 +159,9 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
           total: songs.length,
         });
       } else {
+        // 分页由 sidecar 完成：一次只回本页（PAGE_SIZE 首），不再整单返回
         const data = await api.getPlaylist(playlistId, source, page, PAGE_SIZE);
+        if (seq !== loadSeqRef.current) return;
         setPlaylist(data);
       }
       setCurrentPage(page);
@@ -156,10 +170,11 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
         document.querySelector('main')?.scrollTo({ top: 0 });
       });
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
       setLoadError('加载失败，请重试');
       console.error('加载歌单失败:', e);
     } finally {
-      setIsLoading(false);
+      if (seq === loadSeqRef.current) setIsLoading(false);
     }
   }, [playlistId, source]);
 
@@ -173,34 +188,69 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
     loadPage(1);
   }, [playlistId, source, loadPage]);
 
-  // Extract color for playlist header title
+  // 歌单标题取色：统一走 utils/colorExtractor 的 extractPalette。
+  // 原来这里自己静态 import Vibrant 又写了一遍取色逻辑（第三份），存在三个问题：
+  //   1. 静态 import 让 node-vibrant 无法被懒加载（构建时已给出警告），首屏白背这个包；
+  //   2. 没有缓存：每次进入歌单都重新解码同一张封面；
+  //   3. 依赖 palette.LightVibrant，取不到就退回白色 —— 而全局主题色那套有
+  //      Vibrant → DarkVibrant → Muted → 默认色 的完整优先级，这里却没跟上。
   useEffect(() => {
     if (!playlist) return;
     let isMounted = true;
     const url = getSongCoverUrl(playlist, 400);
     if (!url) return;
-    
-    Vibrant.from(url).getPalette().then((palette) => {
-      if (!isMounted || !palette) return;
-      // Prefer LightVibrant for dark background, fallback to Vibrant or pure white
-      const color = palette.LightVibrant?.hex || palette.Vibrant?.hex || 'rgba(255,255,255,0.95)';
-      setHeaderTextColor(color);
-    }).catch(() => {});
-    
+
+    extractPalette(url)
+      .then((palette) => {
+        if (!isMounted || !palette) return;
+        // 浅色标题优先（深色背景上可读），退到主色，再退到白色
+        const color = palette.LightVibrant?.hex
+          || palette.Vibrant?.hex
+          || 'rgba(255,255,255,0.95)';
+        setHeaderTextColor(color);
+      })
+      .catch(() => {});
+
     return () => { isMounted = false; };
   }, [playlist]);
 
   const totalPages = playlist?.total ? Math.ceil(playlist.total / PAGE_SIZE) : 1;
   const trackOffset = (currentPage - 1) * PAGE_SIZE;
 
-  const handlePlayAll = () => {
+  const handlePlayAll = useCallback(async () => {
     if (!playlist || playlist.tracks.length === 0) return;
+    // 排行榜：本地已持有全部 100 首，直接整单入队
     if (source === 'toplist' && allToplistSongsRef.current.length > 0) {
       setQueue(allToplistSongsRef.current, 0);
-    } else {
-      setQueue(playlist.tracks, 0);
+      return;
     }
-  };
+    // 分页歌单：不为了「播放全部」再拉全量。「播放全部」= 从第 1 首开始，
+    // 因此只在不在第 1 页时取一次首页队列（30 首），并把视图同步回第 1 页。
+    if (currentPage === 1) {
+      setQueue(playlist.tracks, 0);
+      return;
+    }
+    const seq = ++loadSeqRef.current;
+    setIsLoading(true);
+    setLoadError(null);
+    setSelectedIds(new Set());
+    try {
+      const data = await api.getPlaylist(playlistId!, source, 1, PAGE_SIZE);
+      if (seq !== loadSeqRef.current) return;
+      setPlaylist(data);
+      setCurrentPage(1);
+      if (data && data.tracks.length > 0) setQueue(data.tracks, 0);
+      requestAnimationFrame(() => {
+        document.querySelector('main')?.scrollTo({ top: 0 });
+      });
+    } catch (e) {
+      if (seq !== loadSeqRef.current) return;
+      setLoadError('加载失败，请重试');
+      console.error('播放全部失败:', e);
+    } finally {
+      if (seq === loadSeqRef.current) setIsLoading(false);
+    }
+  }, [playlist, playlistId, source, currentPage, setQueue]);
 
   const handlePlayTrack = useCallback((_song: Song, index: number) => {
     if (!playlist) return;
@@ -221,13 +271,6 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
     onNavigate({ page: 'album', id, source: source === 'toplist' ? 'tencent' : (playlist?.source || source), name });
   }, [source, playlist, onNavigate]);
 
-  const handleJump = useCallback(() => {
-    const num = parseInt(jumpInput, 10);
-    if (!Number.isFinite(num) || num < 1 || num > totalPages) return;
-    setJumpInput('');
-    void loadPage(num);
-  }, [jumpInput, totalPages, loadPage]);
-
   if (!playlistId) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-faint, rgba(255,255,255,0.45))', gap: 16 }}>
@@ -242,50 +285,17 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
 
   if (loadError && !isLoading) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-faint)', gap: 16, padding: 40 }}>
-        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="8" x2="12" y2="12" />
-          <line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        <span style={{ fontSize: 16 }}>{loadError}</span>
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => loadPage(currentPage)}
-          style={{ padding: '8px 24px', borderRadius: 8, background: 'var(--color-primary, #6366f1)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 500 }}
-        >
-          重试
-        </motion.button>
-      </div>
+      <ErrorState
+        message={loadError}
+        onRetry={() => loadPage(currentPage)}
+        height="100%"
+        padding={40}
+      />
     );
   }
 
   if (isLoading) {
-    return (
-      <div style={{ padding: '40px', display: 'flex', flexDirection: 'column', gap: 24 }}>
-        <div style={{ display: 'flex', gap: 32, alignItems: 'center' }}>
-          <div className="shimmer-skeleton" style={{ width: 180, height: 180, borderRadius: 16 }} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1 }}>
-            <div className="shimmer-skeleton" style={{ width: '40%', height: 32, borderRadius: 6 }} />
-            <div className="shimmer-skeleton" style={{ width: '20%', height: 18, borderRadius: 4 }} />
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 24 }}>
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} style={{ display: 'flex', gap: 16, alignItems: 'center', padding: '12px 16px' }}>
-              <div className="shimmer-skeleton" style={{ width: 24, height: 20, borderRadius: 4 }} />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
-                <div className="shimmer-skeleton" style={{ width: '30%', height: 16, borderRadius: 4 }} />
-                <div className="shimmer-skeleton" style={{ width: '15%', height: 12, borderRadius: 4 }} />
-              </div>
-              <div className="shimmer-skeleton" style={{ width: '20%', height: 16, borderRadius: 4 }} />
-              <div className="shimmer-skeleton" style={{ width: 40, height: 16, borderRadius: 4 }} />
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    return <DetailSkeleton coverSize={180} coverRadius={16} rows={6} />;
   }
 
   if (!playlist) {
@@ -297,7 +307,10 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
   }
 
   const coverUrl = getSongCoverUrl(playlist, 400);
-  const totalDuration = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+  // 分页后 tracks 只是当前页，时长只在「本页即全部」时才等于整单时长
+  const pageDuration = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+  const playlistTotal = playlist.total ?? playlist.trackCount ?? playlist.tracks.length;
+  const isWholePlaylistLoaded = playlist.tracks.length >= playlistTotal;
   const formatDuration = (s: number) => {
     const mins = Math.floor(s / 60);
     return `${mins} 分钟`;
@@ -365,11 +378,11 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
               {playlist.name}
             </h1>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: 'rgba(255,255,255,0.65)' }}>
-              <span>{playlist.trackCount} 首</span>
-              {totalDuration > 0 && (
+              <span>{playlistTotal} 首</span>
+              {pageDuration > 0 && (
                 <>
                   <span>•</span>
-                  <span>{formatDuration(totalDuration)}</span>
+                  <span>{isWholePlaylistLoaded ? formatDuration(pageDuration) : `本页 ${formatDuration(pageDuration)}`}</span>
                 </>
               )}
             </div>
@@ -455,13 +468,15 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
                 exit={{ opacity: 0, y: -8, scale: 0.97 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
                 style={{
-                  position: 'absolute', top: '100%', right: 0, marginTop: 8, minWidth: 260,
-                  background: 'var(--acrylic-noise), var(--acrylic-tint)',
-                  backdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
-                  WebkitBackdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
-                  border: '1px solid var(--glass-border)',
-                  borderRadius: 16, padding: 8, zIndex: 50,
-                  boxShadow: '0 16px 48px rgba(0,0,0,0.3)',
+                  position: 'absolute', top: '100%', right: 0, marginTop: 8,
+                  // 统一走 popoverGlass：透明度开关为必填参数，避免再次漏判
+                  ...popoverGlass({
+                    enableTransparency,
+                    radius: 16,
+                    padding: 8,
+                    minWidth: 260,
+                    elevation: 'lg',
+                  }),
                 }}
               >
                 {/* New Library Row */}
@@ -590,6 +605,7 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
                     displayIndex={trackOffset + i + 1}
                     isCurrent={current?.id === track.id}
                     isPlaying={isPlaying}
+                    isBuffering={isBuffering}
                     selectMode={selectMode}
                     selected={selectedIds.has(track.id)}
                     onToggleSelect={toggleSelect}
@@ -603,74 +619,14 @@ export function PlaylistView({ playlistId, source = 'netease', onNavigate }: Pla
             </motion.div>
           </TrackList>
 
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              padding: '24px 0 16px',
-            }}>
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                disabled={currentPage <= 1}
-                onClick={() => loadPage(currentPage - 1)}
-                style={{
-                  background: 'var(--color-surface-hover)', border: '1px solid var(--color-border)',
-                  color: currentPage <= 1 ? 'var(--color-icon-disabled)' : 'var(--color-icon)',
-                  cursor: currentPage <= 1 ? 'not-allowed' : 'pointer',
-                  padding: '6px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500,
-                }}
-              >
-                上一页
-              </motion.button>
-              <span style={{ color: 'var(--color-text-faint)', fontSize: 13, padding: '0 12px' }}>
-                {currentPage} / {totalPages}
-              </span>
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                disabled={currentPage >= totalPages}
-                onClick={() => loadPage(currentPage + 1)}
-                style={{
-                  background: 'var(--color-surface-hover)', border: '1px solid var(--color-border)',
-                  color: currentPage >= totalPages ? 'var(--color-icon-disabled)' : 'var(--color-icon)',
-                  cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer',
-                  padding: '6px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500,
-                }}
-              >
-                下一页
-              </motion.button>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12 }}>
-                <span style={{ color: 'var(--color-text-faint)', fontSize: 13 }}>跳至</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={totalPages}
-                  value={jumpInput}
-                  onChange={(e) => setJumpInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleJump(); }}
-                  placeholder="页"
-                  style={{
-                    width: 56, height: 30, padding: '0 8px', fontSize: 13, textAlign: 'center',
-                    color: 'var(--color-icon)', background: 'var(--color-surface-hover)',
-                    border: '1px solid var(--color-border)', borderRadius: 8, outline: 'none',
-                  }}
-                />
-                <span style={{ color: 'var(--color-text-faint)', fontSize: 13 }}>页</span>
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={handleJump}
-                  style={{
-                    background: 'var(--color-primary, #6366f1)', border: 'none', color: '#fff',
-                    cursor: 'pointer', padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 500,
-                  }}
-                >
-                  跳转
-                </motion.button>
-              </div>
-            </div>
-          )}
+          {/* Pagination：统一走 common/Pagination（含上一页/下一页/跳页输入） */}
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={(next) => void loadPage(next)}
+            showJump
+            style={{ padding: '24px 0 16px', gap: 8 }}
+          />
         </div>
       )}
     </div>

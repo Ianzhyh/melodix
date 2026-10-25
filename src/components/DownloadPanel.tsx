@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useUIStore } from '../stores/uiStore';
+import { useConfigStore } from '../stores/configStore';
 import { useDownloadStore, type DownloadStatus, type DownloadTask } from '../stores/downloadStore';
 
 function formatBytes(bytes: number): string {
@@ -260,6 +261,9 @@ export function DownloadPanel() {
   const setOpen = useUIStore((s) => s.setDownloadPanelOpen);
   const tasks = useDownloadStore((s) => s.tasks);
   const clearCompleted = useDownloadStore((s) => s.clearCompleted);
+  // 亚克力开关：队列面板/评论面板都判断了，只有下载面板漏了 ——
+  // 用户在设置里关掉透明效果后，下载面板仍然是全屏高斯模糊（另两个面板已经变不透明）。
+  const enableTransparency = useConfigStore((s) => s.enableTransparency);
 
   const hasCompleted = tasks.some((t) => t.status === 'completed');
 
@@ -297,9 +301,9 @@ export function DownloadPanel() {
               right: 0,
               bottom: 'var(--player-bar-height, 88px)',
               width: 360,
-              background: 'var(--acrylic-noise), var(--acrylic-tint)',
-              backdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
-              WebkitBackdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
+              background: enableTransparency ? 'var(--acrylic-noise), var(--acrylic-tint)' : 'var(--color-bg-elevated)',
+              backdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
+              WebkitBackdropFilter: enableTransparency ? 'var(--acrylic-blur) var(--acrylic-saturate)' : 'none',
               borderLeft: '1px solid var(--glass-border)',
               zIndex: 'var(--z-modal)',
               display: 'flex',

@@ -5,6 +5,7 @@ import { usePlaybackStore } from '../stores/playbackStore';
 import { useToastStore } from '../stores/toastStore';
 import { useConfigStore } from '../stores/configStore';
 import { getSongCoverUrl } from '../utils/cover';
+import { onCoverError } from '../utils/coverFallback';
 
 interface QueuePanelProps {
   isOpen: boolean;
@@ -144,7 +145,7 @@ export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
             src={coverUrl}
             alt=""
             loading="lazy"
-            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            onError={onCoverError}
             style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', background: 'var(--color-bg-placeholder)', flexShrink: 0 }}
           />
         ) : (
@@ -302,7 +303,7 @@ export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
                     <img
                       src={currentCoverUrl}
                       alt=""
-                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                      onError={onCoverError}
                       style={{ width: 42, height: 42, borderRadius: 8, objectFit: 'cover', background: 'var(--color-bg-placeholder)' }}
                     />
                   ) : (

@@ -10,6 +10,7 @@ import { useToastStore } from '../stores/toastStore';
 import { AddToLibraryButton } from './AddToLibraryModal';
 import { TrackList, TrackListHeader } from './common/TrackList';
 import { TrackRow } from './common/TrackRow';
+import { toUserMessage } from '../utils/errorMessage';
 
 // 支持的音频扩展名
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'aac', 'm4a', 'ogg'];
@@ -34,6 +35,7 @@ export function LocalLibraryPage() {
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const current = usePlaybackStore((s) => s.current);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const isBuffering = usePlaybackStore((s) => s.isBuffering);
   const localLibraryPath = useConfigStore((s) => s.localLibraryPath);
   const showToast = useToastStore((s) => s.showToast);
 
@@ -126,7 +128,7 @@ export function LocalLibraryPage() {
       reportImportResult(result, '导入文件');
     } catch (err) {
       console.error('导入文件失败:', err);
-      showToast(`导入文件失败：${String(err)}`, 'error');
+      showToast(toUserMessage(err, '导入文件'), 'error');
     }
   }, [importFiles, reportImportResult, showToast]);
 
@@ -139,7 +141,7 @@ export function LocalLibraryPage() {
       reportImportResult(result, '导入文件夹');
     } catch (err) {
       console.error('导入文件夹失败:', err);
-      showToast(`导入文件夹失败：${String(err)}`, 'error');
+      showToast(toUserMessage(err, '导入文件夹'), 'error');
     }
   }, [scanDirectory, reportImportResult, showToast]);
 
@@ -154,7 +156,7 @@ export function LocalLibraryPage() {
       reportImportResult(result, '重新扫描');
     } catch (err) {
       console.error('重新扫描失败:', err);
-      showToast(`重新扫描失败：${String(err)}`, 'error');
+      showToast(toUserMessage(err, '重新扫描'), 'error');
     }
   }, [localLibraryPath, scanDirectory, reportImportResult, showToast]);
 
@@ -165,7 +167,7 @@ export function LocalLibraryPage() {
       showToast('补齐完成', 'success');
     } catch (err) {
       console.error('补齐失败:', err);
-      showToast(`补齐失败：${String(err)}`, 'error');
+      showToast(toUserMessage(err, '补齐'), 'error');
     }
   }, [enrichAllSongs, showToast]);
 
@@ -408,9 +410,9 @@ export function LocalLibraryPage() {
       {/* 歌曲列表 */}
       {songs.length > 0 && (
         <TrackList showCover={true} actionWidth="160px">
-          <div style={{ padding: '0 12px' }}>
-            <TrackListHeader showCover={true} />
-          </div>
+          {/* 表头自带 padding '0 12px 10px'（TrackList.tsx:72），与行 padding '10px 12px' 对齐；
+              这里不能再包一层 padding:'0 12px'，否则表头比行左右各内缩 12px（首格 x +12、末格 right -12、宽 -24）。 */}
+          <TrackListHeader showCover={true} />
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <div 
               style={{ 
@@ -442,6 +444,7 @@ export function LocalLibraryPage() {
                     displayIndex={index + 1}
                     isCurrent={current?.id === song.id}
                     isPlaying={isPlaying}
+                    isBuffering={isBuffering}
                     selectMode={false}
                     selected={false}
                     onToggleSelect={() => {}}

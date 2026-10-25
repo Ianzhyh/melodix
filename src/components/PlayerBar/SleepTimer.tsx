@@ -4,14 +4,19 @@ import { useSleepTimerStore } from '../../stores/sleepTimerStore';
 import { usePlaybackStore } from '../../stores/playbackStore';
 import { useToastStore } from '../../stores/toastStore';
 import { useConfigStore } from '../../stores/configStore';
+import { formatClock } from '../../utils/format';
+import { useDismiss } from '../../hooks/useDismiss';
 
 const TIME_OPTIONS = [15, 30, 45, 60, 90];
 
-function formatRemaining(seconds: number): string {
-  const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-  const s = (seconds % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
+/**
+ * 剩余时间 mm:ss。统一走 utils/format 的 formatClock。
+ *
+ * 原实现直接 `Math.floor(seconds / 60)`：当 `endsAt` 尚未写入、或
+ * `Date.now()` 与 `endsAt` 相减得到 NaN / 负数时，会渲染出 `NaN:NaN` / `-1:-30`
+ * 这种明显是故障的字符串（api/client 的 formatTime 有守卫，这份手写的漏了）。
+ */
+const formatRemaining = (seconds: number): string => formatClock(seconds);
 
 export function SleepTimerButton() {
   const { active, endsAt, startTimeTimer, startSongEndTimer, cancelTimer } = useSleepTimerStore();
@@ -29,25 +34,9 @@ export function SleepTimerButton() {
     return () => clearInterval(id);
   }, [active]);
 
-  // 全局 Escape 广播关闭菜单（与 App 的 melodix-close-popups 机制一致）
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
-    window.addEventListener('melodix-close-popups', close);
-    return () => window.removeEventListener('melodix-close-popups', close);
-  }, [menuOpen]);
-
-  // 外点关闭
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [menuOpen]);
+  // 菜单关闭：外点 + Escape 广播，统一走 useDismiss
+  // （原来是两个几乎相同的 effect，各自带一份 open 守卫）
+  useDismiss(menuOpen, containerRef, () => setMenuOpen(false));
 
   const remaining = active === 'time' && endsAt ? Math.max(0, Math.ceil((endsAt - now) / 1000)) : 0;
 

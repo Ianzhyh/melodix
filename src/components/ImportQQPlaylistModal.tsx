@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { importTencentPlaylist, extractQQPlaylistId } from '../api/client';
 import { useCustomLibraryStore } from '../stores/customLibraryStore';
 import { useToastStore } from '../stores/toastStore';
+import { Modal } from './common/Modal';
 import type { PlaylistDetail } from '../types/playback';
 
 interface ImportQQPlaylistModalProps {
@@ -22,12 +23,12 @@ export function ImportQQPlaylistModal({ onClose, onImported }: ImportQQPlaylistM
   const createLibrary = useCustomLibraryStore((s) => s.createLibrary);
   const showToast = useToastStore((s) => s.showToast);
 
+  // Escape 统一由 Modal 通过 melodix-close-popups 广播处理。
+  // 原来这里自己监听 window keydown：既与本项目的全局约定不一致，
+  // 也不分层 —— 弹窗内再开别的弹窗时，这一层会被一起关掉。
   useEffect(() => {
     inputRef.current?.focus();
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, []);
 
   const isValidInput = extractQQPlaylistId(input) !== null;
 
@@ -44,14 +45,13 @@ export function ImportQQPlaylistModal({ onClose, onImported }: ImportQQPlaylistM
       if (detail.cover) {
         useCustomLibraryStore.getState().setLibraryCover(libId, detail.cover);
       }
-      // Batch add all songs directly to avoid N individual toasts
-      useCustomLibraryStore.setState(state => {
-        const updated = state.libraries.map(l =>
-          l.id === libId ? { ...l, songs: detail.tracks } : l
-        );
-        try { localStorage.setItem('melodix-custom-libraries', JSON.stringify(updated)); } catch {}
-        return { libraries: updated };
-      });
+      // 批量入库必须走 store 的 addSongs，不能直写 localStorage：
+      // 原实现 `localStorage.setItem('melodix-custom-libraries', ...)` 绕过了
+      //   1. store 的 persist()（存储键只在 store 里定义，硬编码副本易失同步）
+      //   2. 库内去重（重复导入同一歌单会灌入重复曲目）
+      //   3. 统一的失败处理
+      // 另外它先把整个 songs 覆盖写入（而非追加），重名音乐库会被整份替换。
+      useCustomLibraryStore.getState().addSongs(libId, detail.tracks);
       setResult(detail);
       setPhase('success');
       showToast(`已导入「${detail.name}」，共 ${detail.tracks.length} 首`, 'success');
@@ -64,35 +64,16 @@ export function ImportQQPlaylistModal({ onClose, onImported }: ImportQQPlaylistM
 
   const progressPct = progress.total > 0 ? Math.min(100, Math.round((progress.loaded / progress.total) * 100)) : 0;
 
-  const overlayStyle: React.CSSProperties = {
-    position: 'fixed', inset: 0, zIndex: 1000,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: 'rgba(0,0,0,0.4)',
-    backdropFilter: 'blur(10px)',
-  };
-
-  const cardStyle: React.CSSProperties = {
-    width: 420,
-    background: 'var(--color-bg-elevated)',
-    backdropFilter: 'blur(40px) saturate(1.8)',
-    borderRadius: 20,
-    border: '1px solid var(--color-border)',
-    boxShadow: '0 32px 80px rgba(0,0,0,0.3), 0 0 0 1px var(--color-border)',
-    overflow: 'hidden',
-    fontFamily: 'var(--font-main)',
-  };
-
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      style={overlayStyle} onClick={onClose}>
-      <motion.div
-        initial={{ opacity: 0, scale: 0.93, y: 16 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.93, y: 16 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-        onClick={e => e.stopPropagation()}
-        style={cardStyle}
-      >
+    <Modal
+      open
+      onClose={onClose}
+      width={420}
+      bare
+      aria-label="导入 QQ 音乐歌单"
+      cardStyle={{ borderRadius: 20, overflow: 'hidden' }}
+      footer={null}
+    >
         {/* Header */}
         <div style={{ padding: '22px 22px 0', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
@@ -293,7 +274,6 @@ export function ImportQQPlaylistModal({ onClose, onImported }: ImportQQPlaylistM
 
           </AnimatePresence>
         </div>
-      </motion.div>
-    </motion.div>
+    </Modal>
   );
 }

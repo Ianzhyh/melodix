@@ -4,6 +4,7 @@ import { Reorder, useDragControls, motion } from 'framer-motion';
 import { MODULE_META, useHomeLayoutStore } from '../../stores/homeLayoutStore';
 import type { HomeModuleConfig, HomeModuleId, HomeModuleProps } from '../../stores/homeLayoutStore';
 import { useToastStore } from '../../stores/toastStore';
+import { useDismiss } from '../../hooks/useDismiss';
 
 /**
  * 主页编辑模式 UI：
@@ -34,23 +35,7 @@ const IconCheck = ({ size = 13 }: { size?: number }) => (
 );
 
 /* ================= 浮层关闭 hook ================= */
-/** 点击容器外部或按 Esc 时关闭（mousedown 级别，避免与内部点击冲突） */
-function useDismiss(open: boolean, ref: RefObject<HTMLElement | null>, onClose: () => void) {
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      const el = ref.current;
-      if (el && e.target instanceof Node && !el.contains(e.target)) onClose();
-    };
-    const onEscape = () => onClose();
-    document.addEventListener('mousedown', onDoc);
-    window.addEventListener('melodix-close-popups', onEscape);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      window.removeEventListener('melodix-close-popups', onEscape);
-    };
-  }, [open, ref, onClose]);
-}
+// 本文件原先内联了一份 useDismiss，现已提升为共享钩子（其它 17 处同类逻辑也统一走它）
 
 /* ================= 模块设置项定义 ================= */
 interface SegOption { value: string | number; label: string }

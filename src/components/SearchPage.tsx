@@ -7,6 +7,8 @@ import { getSongCoverUrl } from '../utils/cover';
 import * as api from '../api/client';
 import type { RouteState, SearchAlbumItem, SearchArtistItem, SearchPlaylistItem, Song } from '../types/playback';
 import { AddToLibraryButton } from './AddToLibraryModal';
+import { LoadingSpinner } from './common/LoadingSpinner';
+import { onCoverError } from '../utils/coverFallback';
 
 interface SearchPageProps {
   onNavigate: (route: RouteState) => void;
@@ -30,13 +32,12 @@ interface SearchTrackItemProps {
   index: number;
   isCurrent: boolean;
   isPlaying: boolean;
+  isBuffering: boolean;
   onPlay: (song: Song) => void;
   onAddToQueue: (song: Song) => void;
   onOpenArtist: (id: string, name: string) => void;
   onOpenAlbum: (id: string, name: string) => void;
   coverUrl: string;
-  isHovered: boolean;
-  onHoverChange: (id: string | null) => void;
 }
 
 const SearchTrackItem = React.memo(function SearchTrackItem({
@@ -44,18 +45,28 @@ const SearchTrackItem = React.memo(function SearchTrackItem({
   index,
   isCurrent,
   isPlaying,
+  isBuffering,
   onPlay,
   onAddToQueue,
   onOpenArtist,
   onOpenAlbum,
   coverUrl,
-  isHovered,
-  onHoverChange,
 }: SearchTrackItemProps) {
+  // hover 状态下移到行内。
+  //
+  // 原来由父组件持有 hoveredId：每划过一行就 setState，整个搜索结果列表
+  //（可能上百行）全部重渲染一次。虽然行有 memo，但 isHovered 是每行都要比较的
+  // props，等于强制每行都参与 diff —— 这是列表滑动时的主要卡顿来源。
+  // 移到行内后，hover 只让「当前这一行」重渲染。
+  const [isHovered, setIsHovered] = useState(false);
+  // 点歌后到出声之间的即时反馈（序号/播放图标位置让给转圈）
+  const rowLoading = isCurrent && isBuffering && !isPlaying;
   return (
     <motion.div
       variants={itemVariants}
-      className="sp-track-row"
+      className={`sp-track-row${rowLoading ? ' melodix-row-loading' : ''}`}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -66,21 +77,25 @@ const SearchTrackItem = React.memo(function SearchTrackItem({
         border: `1px solid ${isHovered ? 'var(--color-border)' : 'transparent'}`,
         transition: 'background 0.2s, border-color 0.2s',
       }}
-      onMouseEnter={() => onHoverChange(song.id)}
-      onMouseLeave={() => onHoverChange(null)}
       onClick={() => onPlay(song)}
     >
       <div style={{ width: 24, display: 'flex', justifyContent: 'center', alignItems: 'center', flexShrink: 0, marginRight: 10 }}>
-        <span className="sp-track-index" style={{ fontSize: 13, color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-          {index + 1}
-        </span>
-        <span className="sp-play-icon" style={{ display: 'none', color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text)' }}>
-          {isCurrent && isPlaying ? (
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3" height="12" rx="0.5"/><rect x="10" y="2" width="3" height="12" rx="0.5"/></svg>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z"/></svg>
-          )}
-        </span>
+        {rowLoading ? (
+          <LoadingSpinner size={13} strokeWidth={2} color="var(--color-primary, #6366f1)" />
+        ) : (
+          <>
+            <span className="sp-track-index" style={{ fontSize: 13, color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
+              {index + 1}
+            </span>
+            <span className="sp-play-icon" style={{ display: 'none', color: isCurrent ? 'var(--color-primary, #6366f1)' : 'var(--color-text)' }}>
+              {isCurrent && isPlaying ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3" height="12" rx="0.5"/><rect x="10" y="2" width="3" height="12" rx="0.5"/></svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z"/></svg>
+              )}
+            </span>
+          </>
+        )}
       </div>
       <div style={{ position: 'relative', width: 48, height: 48, marginRight: 16, flexShrink: 0 }}>
         <img
@@ -88,7 +103,7 @@ const SearchTrackItem = React.memo(function SearchTrackItem({
           alt={song.name}
           loading="lazy"
           decoding="async"
-          onError={(e) => { e.currentTarget.style.display = 'none'; }}
+          onError={onCoverError}
           style={{ width: '100%', height: '100%', borderRadius: 10, objectFit: 'cover', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}
         />
         <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.2)', borderRadius: 10, opacity: isHovered ? 1 : 0, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'opacity 0.2s' }} className="play-overlay">
@@ -147,8 +162,10 @@ const SearchTrackItem = React.memo(function SearchTrackItem({
     prevProps.index === nextProps.index &&
     prevProps.isCurrent === nextProps.isCurrent &&
     prevProps.isPlaying === nextProps.isPlaying &&
-    prevProps.coverUrl === nextProps.coverUrl &&
-    prevProps.isHovered === nextProps.isHovered
+    // 必须比较：否则 isBuffering 变化被 memo 挡掉，行内转圈不出现
+    prevProps.isBuffering === nextProps.isBuffering &&
+    prevProps.coverUrl === nextProps.coverUrl
+    // isHovered / onHoverChange 已下移到行内 state，不再参与比较
   );
 });
 
@@ -179,7 +196,7 @@ const SearchArtistRow = React.memo(function SearchArtistRow({
             loading="lazy"
             decoding="async"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            onError={onCoverError}
           />
         ) : (
           <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, rgba(99,102,241,0.5) 0%, rgba(139,92,246,0.5) 100%)' }}>
@@ -227,7 +244,7 @@ const SearchAlbumRow = React.memo(function SearchAlbumRow({
             loading="lazy"
             decoding="async"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            onError={onCoverError}
           />
         ) : (
           <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, rgba(99,102,241,0.5) 0%, rgba(139,92,246,0.5) 100%)' }}>
@@ -275,7 +292,7 @@ const SearchPlaylistRow = React.memo(function SearchPlaylistRow({
             loading="lazy"
             decoding="async"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            onError={onCoverError}
           />
         ) : (
           <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, rgba(99,102,241,0.5) 0%, rgba(139,92,246,0.5) 100%)' }}>
@@ -297,13 +314,15 @@ const SearchPlaylistRow = React.memo(function SearchPlaylistRow({
 export function SearchPage({ onNavigate }: SearchPageProps) {
   // 主页搜索框跳转过来时，用最近一次搜索词回填输入框
   const [query, setQuery] = useState(() => useSearchStore.getState().currentKeywords || '');
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const { search, searchResults, artists, albums, playlists, isLoading, error, loadMore, loadingMore, hasMore, platform, searchType, setSearchType } = useSearchStore();
+  const { search, searchResults, artists, albums, playlists, isLoading, error, loadMore, loadingMore, hasMore, loadMoreFailed, retryLoadMore, platform, searchType, setSearchType, currentKeywords } = useSearchStore();
+  // 已经发起过搜索的关键词：用来区分"还没搜"与"搜过但零结果"两个空状态
+  const searchedKeywords = currentKeywords.trim();
   const addSong = usePlaybackStore((s) => s.addSong);
   const showToast = useToastStore((s) => s.showToast);
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const current = usePlaybackStore((s) => s.current);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const isBuffering = usePlaybackStore((s) => s.isBuffering);
 
   // 各平台支持的综合搜索类型（腾讯无公开歌单搜索接口）
   const searchTabs = useMemo(() => {
@@ -362,10 +381,6 @@ export function SearchPage({ onNavigate }: SearchPageProps) {
     addSong(song);
     showToast('已加入播放队列', 'info');
   }, [addSong, showToast]);
-
-  const handleHoverChange = useCallback((id: string | null) => {
-    setHoveredId(id);
-  }, []);
 
   const handleOpenArtist = useCallback((id: string, name: string) => {
     if (!id) {
@@ -580,13 +595,12 @@ export function SearchPage({ onNavigate }: SearchPageProps) {
                 index={index}
                 isCurrent={current?.id === song.id}
                 isPlaying={isPlaying}
+                isBuffering={isBuffering}
                 onPlay={handlePlaySong}
                 onAddToQueue={handleAddToQueue}
                 onOpenArtist={handleOpenArtist}
                 onOpenAlbum={handleOpenAlbum}
                 coverUrl={coverUrl}
-                isHovered={hoveredId === song.id}
-                onHoverChange={handleHoverChange}
               />
             );
           })}
@@ -594,11 +608,26 @@ export function SearchPage({ onNavigate }: SearchPageProps) {
           {/* 哨兵节点：进入视口即触发 loadMore */}
           <div ref={sentinelRef} style={{ height: 1 }} />
 
-          {/* 底部状态：加载中 / 已加载全部 */}
+          {/* 底部状态：加载中 / 加载失败可重试 / 已加载全部 */}
           {loadingMore ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px 0', color: 'var(--color-text-dim)' }}>
-              <span style={{ display: 'inline-block', width: 16, height: 16, borderRadius: '50%', border: '2px solid var(--color-text-dim)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
+              <LoadingSpinner size={16} color="var(--color-text-dim)" delayed={false} />
               <span style={{ fontSize: 13 }}>加载中...</span>
+            </div>
+          ) : loadMoreFailed ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '16px 0' }}>
+              <span style={{ fontSize: 13, color: 'var(--color-text-faint)' }}>加载更多失败</span>
+              <button
+                type="button"
+                onClick={retryLoadMore}
+                style={{
+                  padding: '5px 14px', borderRadius: 14, fontSize: 12, fontWeight: 600,
+                  background: 'var(--glass-2)', border: '1px solid var(--glass-border)',
+                  color: 'var(--color-text)', cursor: 'pointer',
+                }}
+              >
+                重试
+              </button>
             </div>
           ) : !hasMore ? (
             <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--color-text-faint)', fontSize: 12 }}>
@@ -614,7 +643,21 @@ export function SearchPage({ onNavigate }: SearchPageProps) {
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </div>
-          <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.5 }}>搜索你喜欢的音乐</div>
+          {/* 区分"还没搜"与"搜过但零结果"：
+              原来这两个状态共用同一句"搜索你喜欢的音乐"，用户搜完看到它
+              会以为请求没发出去（其实已经返回 0 条）。 */}
+          {searchedKeywords ? (
+            <>
+              <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.5 }}>
+                未找到「{searchedKeywords}」相关的单曲
+              </div>
+              <div style={{ fontSize: 13, marginTop: 8, color: 'var(--color-text-faint)' }}>
+                换个关键词试试，或切换到「歌手 / 专辑{searchTabs.some(t => t.id === 'playlist') ? ' / 歌单' : ''}」搜索
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.5 }}>搜索你喜欢的音乐</div>
+          )}
         </motion.div>
       )}
     </div>

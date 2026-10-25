@@ -38,7 +38,9 @@ export const VolumeControl: React.FC<VolumeControlProps> = ({
 
   useEffect(() => clearHideTimer, []);
 
-  // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）：清隐藏定时器并立即隐藏滑块
+  // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）：清隐藏定时器并立即隐藏滑块。
+  // 这里**不用** useDismiss：音量滑块是 hover 唤出的，没有"点击外部关闭"的语义，
+  // 套用外点逻辑会在点击别处时抢在 mouseleave 之前关掉，观感变突兀。
   useEffect(() => {
     const closePopup = () => {
       if (hideTimerRef.current !== null) {

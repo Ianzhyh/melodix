@@ -11,7 +11,16 @@ import { TrackList, TrackListHeader } from './common/TrackList';
 import { TrackRow } from './common/TrackRow';
 import { getLibraryCoverUrl } from '../utils/cover';
 import { useSongEnrichment } from '../hooks/useSongEnrichment';
+import { Pagination, usePagination, DEFAULT_PAGE_SIZE } from './common/Pagination';
+import { Modal, ModalButton } from './common/Modal';
+import { popoverGlass } from '../utils/styles';
+import { useDismiss } from '../hooks/useDismiss';
+import { useConfigStore } from '../stores/configStore';
 import type { RouteState, Song } from '../types/playback';
+import { onCoverError } from '../utils/coverFallback';
+
+/** 歌曲列表每页条数：分页 UI 与派生量统一走 common/Pagination */
+const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 interface CustomLibraryPageProps {
   libraryId?: string;
@@ -27,34 +36,6 @@ const libraryGlyph = (
     <polyline points="9 7 15 10 9 13 9 7" />
   </svg>
 );
-
-const modalOverlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  zIndex: 'var(--z-confirm)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  // 不做 backdrop-filter：遮罩透明度动画期间每帧对整屏重采样模糊是首帧卡顿的主因之一，
-  // 用略深的纯色遮罩替代，视觉等价且零重绘成本
-  background: 'rgba(0,0,0,0.5)',
-};
-
-const modalCardStyle: React.CSSProperties = {
-  // 卡片不再叠 backdrop-filter（卡片本身接近不透明，模糊几乎不可见却代价高昂）
-  background: 'var(--color-bg-elevated, rgba(30,30,30,0.92))',
-  border: '1px solid var(--glass-border, rgba(255,255,255,0.1))',
-  borderRadius: 16,
-  padding: 24,
-  minWidth: 360,
-  maxWidth: '90%',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 16,
-  // 阴影轻量化：入场动画不再缩放，阴影不会跟着突然放大，也不参与逐帧重绘
-  boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
-  color: 'var(--color-text)',
-};
 
 const inputStyle: React.CSSProperties = {
   width: '100%',
@@ -78,7 +59,7 @@ const coverMenuItemStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-// 创建 / 重命名 / 删除 弹窗：样式对齐设置页的路径弹窗与关闭确认弹窗
+// 创建 / 重命名 / 删除 弹窗：统一走 common/Modal（遮罩、玻璃、按钮、焦点管理只写一次）
 function LibraryModal({
   title,
   inputValue,
@@ -104,81 +85,48 @@ function LibraryModal({
 }) {
   const confirmDisabled = showInput ? !(inputValue ?? '').trim() : false;
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.15, ease: 'easeOut' }}
-      style={modalOverlayStyle}
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.18, ease: 'easeOut' }}
-        onClick={(e) => e.stopPropagation()}
-        style={modalCardStyle}
-      >
-        <div style={{ fontSize: 16, fontWeight: 600 }}>{title}</div>
-        {warning && (
-          <div style={{ fontSize: 13, color: 'var(--color-text-dim)', lineHeight: 1.5 }}>{warning}</div>
-        )}
-        {showInput && (
-          <input
-            autoFocus
-            value={inputValue}
-            onChange={(e) => onInputChange?.(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !confirmDisabled) onConfirm();
-            }}
-            placeholder={inputPlaceholder}
-            maxLength={40}
-            style={inputStyle}
-            onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--glass-border)')}
-            onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--color-border)')}
-          />
-        )}
+    <Modal
+      open
+      onClose={onClose}
+      title={title}
+      description={warning}
+      cardStyle={{ minWidth: 360 }}
+      footer={
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 4 }}>
-          <button
-            onClick={onClose}
-            style={{
-              padding: '8px 20px',
-              borderRadius: 8,
-              border: '1px solid var(--color-border)',
-              background: 'transparent',
-              color: 'var(--color-text)',
-              fontSize: 13,
-              cursor: 'pointer',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-surface-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-          >
-            取消
-          </button>
-          <button
-            onClick={onConfirm}
+          <ModalButton onClick={onClose}>取消</ModalButton>
+          <ModalButton
+            variant={confirmDanger ? 'danger' : 'primary'}
             disabled={confirmDisabled}
-            style={{
-              padding: '8px 20px',
-              borderRadius: 8,
-              border: 'none',
-              background: confirmDanger ? 'var(--color-danger, #ef4444)' : 'var(--color-primary, #6366f1)',
-              color: '#fff',
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: confirmDisabled ? 'not-allowed' : 'pointer',
-              opacity: confirmDisabled ? 0.6 : 1,
-            }}
+            onClick={onConfirm}
           >
             {confirmLabel}
-          </button>
+          </ModalButton>
         </div>
-      </motion.div>
-    </motion.div>
+      }
+    >
+      {showInput && (
+        <input
+          autoFocus
+          value={inputValue}
+          onChange={(e) => onInputChange?.(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !confirmDisabled) onConfirm();
+          }}
+          placeholder={inputPlaceholder}
+          maxLength={40}
+          style={inputStyle}
+          onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--glass-border)')}
+          onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--color-border)')}
+        />
+      )}
+    </Modal>
   );
 }
 
 export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPageProps) {
   const libraries = useCustomLibraryStore((s) => s.libraries);
+  // 封面菜单等浮层的玻璃材质跟随透明度开关（此前写死丙烯，关掉开关后仍模糊）
+  const enableTransparency = useConfigStore((s) => s.enableTransparency);
   const createLibrary = useCustomLibraryStore((s) => s.createLibrary);
   const renameLibrary = useCustomLibraryStore((s) => s.renameLibrary);
   const deleteLibrary = useCustomLibraryStore((s) => s.deleteLibrary);
@@ -192,6 +140,7 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const current = usePlaybackStore((s) => s.current);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const isBuffering = usePlaybackStore((s) => s.isBuffering);
 
   // 侧边栏「新建音乐库」入口：通过 uiStore 标志触发创建弹窗
   const libraryCreateOpen = useUIStore((s) => s.libraryCreateOpen);
@@ -202,9 +151,11 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
   const [coverMenuOpen, setCoverMenuOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const coverMenuRef = useRef<HTMLDivElement | null>(null);
-  // 多选模式：选中集合按当前音乐库歌曲计（切库重置；批量移除后清空）
+  // 多选模式：选中集合按当前页可见歌曲计（切库/切页重置；批量移除后清空）
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // 歌曲列表分页（每页 50，与 FavoritesPage 一致）：避免一次挂载整库几百上千行
+  const [page, setPage] = useState(1);
   // 音乐库卡片拖拽排序状态（自定义指针拖拽）
   const [drag, setDrag] = useState<{ id: string; from: number } | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -233,11 +184,27 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
     }
   });
 
-  // 歌曲列表拖拽排序的受控值：稳定 id 数组（对齐 QueuePanel 的 Reorder 用法）
-  const songValues = useMemo(
-    () => (selected ? selected.songs.map((s) => s.id) : []),
-    [selected],
+  // ===== 分页：须在 songValues / pageSongs 消费方之前声明 =====
+  // 整库 620 首一次性挂载会拖垮渲染（实测 12042 DOM 节点 / scrollHeight 40537px），
+  // 故按页切片。分页派生量与分页 UI 统一走 common/Pagination。
+  const librarySongs = selected ? selected.songs : [];
+  const pageMeta = usePagination(librarySongs.length, page, PAGE_SIZE);
+  const { currentPage, totalPages, pageStartIndex } = pageMeta;
+  // 依赖用原始值而不是 pageMeta 对象：后者每次渲染都是新引用，会让 useMemo 失效
+  const pageSongs = useMemo(
+    () => librarySongs.slice(pageStartIndex, pageStartIndex + PAGE_SIZE),
+    [librarySongs, pageStartIndex],
   );
+  // 页码越界时回正（例如批量移除后总页数减少）
+  useEffect(() => {
+    if (page !== currentPage) setPage(currentPage);
+  }, [page, currentPage]);
+  const goToTop = useCallback(() => {
+    document.querySelector('main')?.scrollTo({ top: 0 });
+  }, []);
+
+  // 歌曲列表拖拽排序的受控值：当前页的稳定 id 数组（对齐 QueuePanel 的 Reorder 用法）
+  const songValues = useMemo(() => pageSongs.map((s) => s.id), [pageSongs]);
 
   const exitSelectMode = useCallback(() => {
     setSelectMode(false);
@@ -256,23 +223,15 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
     return () => window.removeEventListener('melodix-close-popups', closePopups);
   }, []);
 
-  // 切换音乐库时重置多选（歌曲集合变化，避免残留选择）
+  // 切换音乐库时重置多选与分页（歌曲集合变化，避免残留选择/页码越界）
   useEffect(() => {
     setSelectMode(false);
     setSelectedIds(new Set());
+    setPage(1);
   }, [libraryId]);
 
-  // 封面菜单外点关闭（对齐播放栏音质菜单的交互）
-  useEffect(() => {
-    if (!coverMenuOpen) return;
-    const handleClick = (e: MouseEvent) => {
-      if (coverMenuRef.current && !coverMenuRef.current.contains(e.target as Node)) {
-        setCoverMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [coverMenuOpen]);
+  // 封面菜单外点 + Escape 关闭（统一走 useDismiss）
+  useDismiss(coverMenuOpen, coverMenuRef, () => setCoverMenuOpen(false));
 
   // 音乐库卡片指针拖拽：移动超过 5px 阈值进入拖拽；拖影 transform 命令式更新（不触发
   // 每帧重渲染，完全跟手）；拖影整个矩形钳制在网格容器内，不会探出盖住上方信息区。
@@ -429,17 +388,19 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
     if (onNavigate) onNavigate({ page: 'custom-library' });
   };
 
+  // 播放整库（队列仍是整库，不受分页影响）
   const handlePlayAll = useCallback(() => {
     if (!selected || selected.songs.length === 0) return;
     setQueue(selected.songs, 0);
   }, [selected, setQueue]);
 
+  // 播放当前页第 index 行：索引要换算成整库下标，否则第 2 页起会播错歌
   const handlePlayTrack = useCallback(
     (index: number) => {
       if (!selected) return;
-      setQueue(selected.songs, index);
+      setQueue(selected.songs, pageStartIndex + index);
     },
-    [selected, setQueue],
+    [selected, setQueue, pageStartIndex],
   );
 
   const handleRemoveTrack = useCallback(
@@ -450,14 +411,15 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
     [selected, removeSong],
   );
 
-  // ===== 多选 =====
-  const librarySongs = selected ? selected.songs : [];
+  // ===== 多选（按当前页计：与 PlaylistView 一致，切页/切库清空选中） =====
+  // 分页派生量（librarySongs / totalPages / currentPage / pageStartIndex / pageSongs /
+  // goToTop）已在组件上方声明，供 songValues 与拖拽逻辑复用。
   const selectedSongs = useMemo(
-    () => librarySongs.filter((s) => selectedIds.has(s.id)),
-    [librarySongs, selectedIds],
+    () => pageSongs.filter((s) => selectedIds.has(s.id)),
+    [pageSongs, selectedIds],
   );
   const allSelected =
-    selectMode && librarySongs.length > 0 && librarySongs.every((s) => selectedIds.has(s.id));
+    selectMode && pageSongs.length > 0 && pageSongs.every((s) => selectedIds.has(s.id));
 
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -470,10 +432,10 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
 
   const toggleSelectAll = useCallback(() => {
     setSelectedIds((prev) => {
-      if (librarySongs.length > 0 && librarySongs.every((s) => prev.has(s.id))) return new Set();
-      return new Set(librarySongs.map((s) => s.id));
+      if (pageSongs.length > 0 && pageSongs.every((s) => prev.has(s.id))) return new Set();
+      return new Set(pageSongs.map((s) => s.id));
     });
-  }, [librarySongs]);
+  }, [pageSongs]);
 
   const handleBatchDownload = useCallback(() => {
     if (selectedSongs.length === 0) return;
@@ -501,17 +463,25 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
     onNavigate({ page: 'album', id: song.albumId, source: song.source || 'tencent', name: song.album });
   }, [onNavigate]);
 
-  // 拖拽调整音乐库内歌曲顺序：由新 value 顺序映射回歌曲对象，整表提交
+  // 拖拽调整音乐库内歌曲顺序：由新 value 顺序映射回歌曲对象。
+  // 注意分页后 Reorder 只拿到「当前页」的 id，而 reorderSongs 会校验长度一致才写入，
+  // 因此这里必须把当前页的排列结果「拼回」整库序列，而不是整表替换（否则长度不符被静默丢弃）。
   const handleReorderSongs = useCallback(
     (newValues: string[]) => {
       if (!selected) return;
       const byId = new Map(selected.songs.map((s) => [s.id, s]));
-      const newSongs = newValues
+      const reorderedPage = newValues
         .map((id) => byId.get(id))
         .filter((s): s is Song => Boolean(s));
-      reorderSongs(selected.id, newSongs);
+      if (reorderedPage.length !== pageSongs.length) return;
+      const nextSongs = [
+        ...selected.songs.slice(0, pageStartIndex),
+        ...reorderedPage,
+        ...selected.songs.slice(pageStartIndex + pageSongs.length),
+      ];
+      reorderSongs(selected.id, nextSongs);
     },
-    [selected, reorderSongs],
+    [selected, reorderSongs, pageSongs, pageStartIndex],
   );
 
   // 选择图片文件作为自定义封面
@@ -616,7 +586,7 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
               >
                 {libraryGlyph}
                 {coverUrl && (
-                  <img src={coverUrl} alt="" onError={e => { e.currentTarget.style.display = 'none'; }}
+                  <img src={coverUrl} alt="" onError={onCoverError}
                     style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
                 )}
                 <div className="cl-cover-edit-hint" style={{
@@ -635,12 +605,9 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                   <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
                     transition={{ duration: 0.15 }}
                     style={{
-                      position: 'absolute', top: '100%', left: 0, marginTop: 8, minWidth: 170,
-                      background: 'var(--acrylic-noise), var(--acrylic-tint)',
-                      backdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
-                      WebkitBackdropFilter: 'var(--acrylic-blur) var(--acrylic-saturate)',
-                      border: '1px solid var(--glass-border)', borderRadius: 12, padding: 4,
-                      boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 'var(--z-modal)' as React.CSSProperties['zIndex'],
+                      position: 'absolute', top: '100%', left: 0, marginTop: 8,
+                      // 统一走 popoverGlass：透明度开关为必填参数，避免再次漏判
+                      ...popoverGlass({ enableTransparency, radius: 12, padding: 4, minWidth: 170, elevation: 'sm' }),
                     }}
                   >
                     <div onClick={handleChooseCover} style={coverMenuItemStyle}
@@ -733,7 +700,7 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                   <SelectionBar
                     key="sel-bar"
                     count={selectedIds.size}
-                    total={librarySongs.length}
+                    total={pageSongs.length}
                     allSelected={allSelected}
                     onToggleSelectAll={toggleSelectAll}
                     onExit={exitSelectMode}
@@ -759,9 +726,17 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                 )}
               </AnimatePresence>
 
+              {/* 分页信息：说明拖拽只在当前页内生效（跨页排序会被整库序列覆盖） */}
+              {totalPages > 1 && (
+                <div style={{ fontSize: 12, color: 'var(--color-text-faint)', padding: '0 12px 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span>第 {currentPage} / {totalPages} 页 · 本页 {pageSongs.length} 首 · 共 {librarySongs.length} 首</span>
+                  <span title="歌曲按页展示，拖拽排序仅在当前页内生效">（拖拽排序仅在当前页内生效）</span>
+                </div>
+              )}
+
               <div ref={songListRef} style={{ position: 'relative', overflow: 'hidden' }}>
                 <Reorder.Group axis="y" values={songValues} onReorder={handleReorderSongs} as="div" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  {selected.songs.map((song, i) => (
+                  {pageSongs.map((song, i) => (
                     <Reorder.Item key={song.id} value={song.id} layout="position"
                       dragListener={!selectMode}
                       dragConstraints={songListRef} dragElastic={0} dragMomentum={false}
@@ -774,9 +749,10 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                       <TrackRow
                         song={song}
                         index={i}
-                        displayIndex={i + 1}
+                        displayIndex={pageStartIndex + i + 1}
                         isCurrent={current?.id === song.id}
                         isPlaying={isPlaying}
+                        isBuffering={isBuffering}
                         selectMode={selectMode}
                         selected={selectedIds.has(song.id)}
                         onToggleSelect={toggleSelect}
@@ -813,6 +789,15 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                   ))}
                 </Reorder.Group>
               </div>
+
+              {/* 分页控件：翻页后回到顶部，并清空选中避免残留隐藏选择 */}
+              {totalPages > 1 && (
+                <Pagination
+                  currentPage={currentPage}
+                  totalPages={totalPages}
+                  onPageChange={(next) => { setPage(next); setSelectedIds(new Set()); goToTop(); }}
+                />
+              )}
             </TrackList>
           )}
         </div>
@@ -952,7 +937,7 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                     decoding="async"
                     className="card-image"
                     draggable={false}
-                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                    onError={onCoverError}
                     style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                   />
                 )}
@@ -1007,7 +992,7 @@ export function CustomLibraryPage({ libraryId, onNavigate }: CustomLibraryPagePr
                       src={ghostCover}
                       alt=""
                       draggable={false}
-                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                      onError={onCoverError}
                       style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                     />
                   ) : (

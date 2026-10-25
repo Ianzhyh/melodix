@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useHistoryStore } from '../stores/historyStore';
 import { usePlaybackStore } from '../stores/playbackStore';
@@ -7,37 +7,19 @@ import { AddToLibraryButton } from './AddToLibraryModal';
 import { TrackList, TrackListHeader } from './common/TrackList';
 import { TrackRow } from './common/TrackRow';
 import { useSongEnrichment } from '../hooks/useSongEnrichment';
+import { Pagination, usePagination, slicePage, DEFAULT_PAGE_SIZE } from './common/Pagination';
+import { formatRelativeTime as formatRelativeTimeShared } from '../utils/format';
+import { EmptyState } from './common/ListStates';
 import type { RouteState, Song } from '../types/playback';
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 type SortMode = 'recent' | 'frequent';
 
-/** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 具体日期 */
-function formatRelativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
-  if (diff < MIN) return '刚刚';
-  if (diff < HOUR) return `${Math.floor(diff / MIN)} 分钟前`;
-  if (diff < DAY) return `${Math.floor(diff / HOUR)} 小时前`;
-  if (diff < 7 * DAY) return `${Math.floor(diff / DAY)} 天前`;
-  return new Date(ts).toLocaleDateString('zh-CN');
-}
+/** 相对时间：统一走 utils/format（此前与 CommentPanel 各写一份，文案不一致） */
+const formatRelativeTime = formatRelativeTimeShared;
 
 
-
-function pagerBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    background: 'none',
-    border: '1px solid var(--color-border, rgba(255,255,255,0.1))',
-    color: disabled ? 'var(--color-text-faint, rgba(255,255,255,0.3))' : 'var(--color-text, rgba(255,255,255,0.9))',
-    padding: '6px 14px',
-    borderRadius: 6,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontSize: 13,
-    transition: 'background 0.15s',
-  };
-}
 
 export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) => void }) {
   const entries = useHistoryStore((s) => s.entries);
@@ -45,6 +27,7 @@ export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) =>
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const current = usePlaybackStore((s) => s.current);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const isBuffering = usePlaybackStore((s) => s.isBuffering);
   const [sortMode, setSortMode] = useState<SortMode>('recent');
   const [page, setPage] = useState(1);
 
@@ -71,16 +54,16 @@ export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) =>
     return entries;
   }, [entries, sortMode]);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = Math.min(Math.max(1, page), totalPages);
-  const pageStartIndex = (currentPage - 1) * PAGE_SIZE;
+  // 总页数 / 页码钳制 / 起始下标统一由 usePagination 计算
+  const pageMeta = usePagination(total, page, PAGE_SIZE);
+  const { currentPage, totalPages, pageStartIndex } = pageMeta;
 
   // 页码越界时回正（例如删除条目后总页数减少）
   useEffect(() => {
     if (page !== currentPage) setPage(currentPage);
   }, [page, currentPage]);
 
-  const pageEntries = total === 0 ? [] : sortedEntries.slice(pageStartIndex, pageStartIndex + PAGE_SIZE);
+  const pageEntries = total === 0 ? [] : slicePage(sortedEntries, pageMeta);
 
   // 老数据补全：为缺失 albumId/artists 的在线歌曲静默拉取元信息并写回存储
   useSongEnrichment(pageEntries.map((e) => e.song), (songId, patch) => {
@@ -113,9 +96,6 @@ export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) =>
         .hp-track-row:hover .cl-add-btn {
           opacity: 1;
           pointer-events: auto;
-        }
-        .hp-pager-btn:hover:not(:disabled) {
-          background: var(--color-hover, rgba(255,255,255,0.06)) !important;
         }
         .hp-sort-btn {
           background: none;
@@ -192,10 +172,10 @@ export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) =>
         )}
       </div>
       {total === 0 ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-          <p style={{ fontSize: 16 }}>还没有播放记录</p>
-          <p style={{ fontSize: 13, marginTop: 8 }}>播放过的歌曲会自动记录在这里，重启应用也不会丢失</p>
-        </div>
+        <EmptyState
+          title="还没有播放记录"
+          hint="播放过的歌曲会自动记录在这里，重启应用也不会丢失"
+        />
       ) : (
         <>
         <TrackList showCover={true} actionWidth="120px" albumWidth="100px">
@@ -227,6 +207,7 @@ export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) =>
                     displayIndex={globalIndex + 1}
                     isCurrent={current?.id === entry.song.id}
                     isPlaying={isPlaying}
+                    isBuffering={isBuffering}
                     selectMode={false}
                     selected={false}
                     onToggleSelect={() => {}}
@@ -250,27 +231,7 @@ export function HistoryPage({ onNavigate }: { onNavigate: (route: RouteState) =>
           </motion.div>
         </TrackList>
           {totalPages > 1 && (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '24px 0 8px' }}>
-              <button
-                className="hp-pager-btn"
-                disabled={currentPage <= 1}
-                onClick={() => setPage(currentPage - 1)}
-                style={pagerBtnStyle(currentPage <= 1)}
-              >
-                上一页
-              </button>
-              <span style={{ fontSize: 13, color: 'var(--color-text-dim, rgba(255,255,255,0.65))', minWidth: 90, textAlign: 'center' }}>
-                第 {currentPage} / {totalPages} 页
-              </span>
-              <button
-                className="hp-pager-btn"
-                disabled={currentPage >= totalPages}
-                onClick={() => setPage(currentPage + 1)}
-                style={pagerBtnStyle(currentPage >= totalPages)}
-              >
-                下一页
-              </button>
-            </div>
+            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setPage} />
           )}
         </>
       )}

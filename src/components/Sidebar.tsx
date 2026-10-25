@@ -10,6 +10,7 @@ import { useLocalLibraryStore } from '../stores/localLibraryStore';
 import { useCustomLibraryStore } from '../stores/customLibraryStore';
 import { getLibraryCoverUrl } from '../utils/cover';
 import { ImportQQPlaylistModal } from './ImportQQPlaylistModal';
+import { onCoverError } from '../utils/coverFallback';
 
 interface SidebarProps {
   activePage: RouteState;
@@ -478,7 +479,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
                       <img
                         src={libCover}
                         alt=""
-                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        onError={onCoverError}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       />
                     ) : (

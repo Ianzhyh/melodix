@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { usePlaybackStore } from '../../stores/playbackStore';
 import { useConfigStore } from '../../stores/configStore';
+import { useDismiss } from '../../hooks/useDismiss';
 import { useFavoriteStore } from '../../stores/favoriteStore';
 import { useDownloadStore } from '../../stores/downloadStore';
 import { useToastStore } from '../../stores/toastStore';
@@ -98,7 +99,8 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
   const enableTransparency = useConfigStore((state) => state.enableTransparency);
   const { toggleFavorite, isFavorite } = useFavoriteStore();
   const lastTrackId = useRef<string | null>(null);
-  const isFirstQualityRender = useRef(true);
+  /** 上次触发加载的「歌曲 id|端口|音质」签名，用于幂等判定 */
+  const lastLoadSignature = useRef<string | null>(null);
   const commentVersionRef = useRef(0);
   const loadVersion = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -138,20 +140,13 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
     };
   }, [lyricsOpen]);
 
-  // Close quality menu on outside click
-  useEffect(() => {
-    if (!showQualityMenu) return;
-    const handleClick = (e: MouseEvent) => {
-      if (qualityMenuRef.current && !qualityMenuRef.current.contains(e.target as Node)) {
-        setShowQualityMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [showQualityMenu]);
+  // 音质菜单：点击外部关闭（统一走 useDismiss，带 open 守卫）
+  useDismiss(showQualityMenu, qualityMenuRef, () => setShowQualityMenu(false));
 
   // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）：关闭音质菜单与更多菜单
-  // （TrackInfo 的 MoreMenu state 在本组件，通过 props 下发，统一在此关闭）
+  //（TrackInfo 的 MoreMenu state 在本组件，通过 props 下发，统一在此关闭）
+  // 注意：这里**不复用** useDismiss —— 它要在菜单都没打开时也能响应 Escape，
+  // 以保证「先关菜单、再关面板」的分层顺序不会被菜单的 open 状态打断。
   useEffect(() => {
     const closePopups = () => {
       setShowQualityMenu(false);
@@ -166,21 +161,17 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
     AudioEngine.setVolume(isMuted ? 0 : volume);
   }, [volume, isMuted]);
 
-  // Auto-clear playback error after 3 seconds
+  // 播放失败提示的自动清除：原实现 3 秒。错误文案有 20 多字
+  //（"无法播放此歌曲，可能需要配置 QQ音乐 Cookie"），11px 字号下一行读完都不止 3 秒，
+  // 用户经常还没读完就消失了。错误类信息给足 8 秒，并且允许点击手动关闭（见下方气泡）。
   useEffect(() => {
     if (!playbackError) return;
-    const timer = window.setTimeout(() => setPlaybackError(null), 3000);
+    const timer = window.setTimeout(() => setPlaybackError(null), 8000);
     return () => window.clearTimeout(timer);
   }, [playbackError, setPlaybackError]);
 
-  // Reset lastTrackId when streamingQuality changes to force reload
-  useEffect(() => {
-    if (isFirstQualityRender.current) {
-      isFirstQualityRender.current = false;
-      return;
-    }
-    lastTrackId.current = null;
-  }, [streamingQuality]);
+  // 音质切换不再靠「清 lastTrackId」制造副作用来触发重载 ——
+  // 加载 effect 现在用 signature（id|port|quality）判定，见下方说明。
 
   // 监听本地音乐更新事件（在线补齐完成后触发）
   // 如果当前播放的是本地歌曲且尚无歌词，重新查询并显示补齐后的歌词
@@ -243,14 +234,45 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
   useEffect(() => {
     if (!current) {
       lastTrackId.current = null;
+      lastLoadSignature.current = null;
       loadVersion.current++;
       return;
     }
-    if (current.id === lastTrackId.current) {
+
+    // 幂等判定用「歌曲 id + 端口 + 音质」三元签名，而不是只比 id。
+    //
+    // 原来只比 `current.id === lastTrackId.current`，同时靠一个独立 effect
+    // 「音质变化就清空 lastTrackId」来间接触发重载。但 sidecarPort 也在本 effect
+    // 的依赖里：端口一变（3000 被占用 → 实际 3001），React 先跑旧 cleanup
+    // —— abortRef.abort() 掐掉在途的 getUrl，并清掉看门狗；再跑新 effect，
+    // 此时 id 没变于是**直接 return**：不发请求、不装看门狗、不 loadVersion++。
+    // 被 abort 的那次加载落进 catch，因 version 判定「不是过期请求」而执行
+    // setPlaying(false) + clearBuffering() —— 表现就是「恢复的那首歌转圈一闪就没、
+    // 既不播也不报错，必须手动再点一次」。
+    const signature = `${current.id}|${sidecarPort}|${streamingQuality}`;
+    if (signature === lastLoadSignature.current) {
       return;
     }
+    lastLoadSignature.current = signature;
     lastTrackId.current = current.id;
     loadVersion.current++;
+
+    // 自动切歌（上一首播完）的竞态守卫：
+    // 上一首 ended 时，AudioEngine 的处理器会自己取下一首 URL 并 play()；而 current
+    // 变化同样会触发本 effect。本 effect 一进来就 AudioEngine.pause()，并且因为这个
+    // 变化让 startPlayback 判定"被打断"，改走 prepare()（只装载、不播放），
+    // 结果把引擎刚起的播放打回暂停 —— 表现就是"自动切到下一首、加载完了但不自动播放"。
+    // 实测事件序列：play ← 引擎，pause ← 本 effect，最终 paused=true、currentTime=0。
+    //
+    // 引擎在开始取 URL 前会同步认领这首歌；这里看到认领就把播放交给引擎，
+    // 只做轻量收尾（歌词/主题色仍由引擎那侧/下一次渲染负责），不再插手音源加载。
+    if (AudioEngine.hasClaimed(current.id)) {
+      AudioEngine.releaseClaim(current.id);
+      // 认领只代表"引擎负责音源"，播放状态由引擎的 playing 事件回写；
+      // 这里不 setPlaying(true)（可能还没真正出声），只清掉上一首的错误提示。
+      setPlaybackError(null);
+      return;
+    }
 
     const loadAndPlay = async () => {
       const version = loadVersion.current;
@@ -365,6 +387,8 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
           startPlayback(urlResult.url);
         } else {
           setPlaying(false);
+          // 取不到播放地址：必须清掉加载态，否则转圈会一直转到看门狗超时
+          usePlaybackStore.getState().clearBuffering();
           setPlaybackError('无法播放此歌曲，可能需要配置 QQ音乐 Cookie');
           return;
         }
@@ -420,16 +444,33 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
       } catch (err) {
         if (version !== loadVersion.current) return;
         setPlaying(false);
+        // 取 URL / 加载抛错：清掉加载态，避免转圈卡死（否则要等 20s 看门狗）
+        usePlaybackStore.getState().clearBuffering();
       }
     };
 
     loadAndPlay();
+
+    // 加载态兜底看门狗：正常情况下 setPlaying/playing 事件会清掉 isBuffering，
+    // 但若某条路径静默失败（例如取 URL 抛错后没有清、或引擎未发出任何事件），
+    // 转圈就会永久卡住。这里在 20s 后强制清除，保证加载动画只会"久"，不会"死"。
+    // 用 loadVersion 判断是否已经切到别的歌（切歌后由新一轮 effect 负责）；
+    // 只在确实没有在播时清，避免误清本地大文件的正常加载。
+    const watchdogVersion = loadVersion.current;
+    const bufferingWatchdog = window.setTimeout(() => {
+      if (watchdogVersion !== loadVersion.current) return;
+      const st = usePlaybackStore.getState();
+      if (st.isBuffering && !st.isPlaying) {
+        st.clearBuffering();
+      }
+    }, 20000);
 
     return () => {
       // Memory Optimization: abort pending requests on unmount
       if (abortRef.current) {
         abortRef.current.abort();
       }
+      window.clearTimeout(bufferingWatchdog);
     };
   }, [current, sidecarPort, streamingQuality, setPlaying, setLyrics, setThemeColor, setPlaybackError]);
 
@@ -739,23 +780,32 @@ export function PlayerBar({ onNavigate }: { onNavigate?: (route: RouteState) => 
             <AnimatePresence>
               {playbackError && (
                 <motion.div
+                  role="alert"
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 4 }}
                   transition={{ duration: 0.2 }}
+                  // 原实现 pointerEvents:'none' + nowrap：文案偏长时既没法点击关闭，
+                  // 又会横向溢出播放栏。这里允许换行、允许点击关闭。
+                  onClick={() => setPlaybackError(null)}
+                  title="点击关闭"
                   style={{
                     position: 'absolute',
                     top: -8,
                     left: '50%',
                     transform: 'translateX(-50%) translateY(-100%)',
                     background: 'var(--color-danger)',
-                    color: 'var(--color-text)',
-                    fontSize: 11,
-                    padding: '4px 12px',
-                    borderRadius: 6,
-                    whiteSpace: 'nowrap',
-                    pointerEvents: 'none',
+                    color: '#fff',
+                    fontSize: 12,
+                    lineHeight: 1.45,
+                    padding: '6px 12px',
+                    borderRadius: 8,
+                    maxWidth: 320,
+                    whiteSpace: 'normal',
+                    textAlign: 'center',
+                    cursor: 'pointer',
                     zIndex: 'var(--z-toast)',
+                    boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
                   }}
                 >
                   {playbackError}

@@ -15,6 +15,7 @@ import * as api from '../../api/client';
 import { getSongCoverUrl, getLibraryCoverUrl } from '../../utils/cover';
 import type { RouteState, Song } from '../../types/playback';
 import type { HomeModuleConfig, CardSize, CoverRatio } from '../../stores/homeLayoutStore';
+import { onCoverError } from '../../utils/coverFallback';
 
 /**
  * 主页内容模块集合：
@@ -158,9 +159,19 @@ const snapSlice = <T,>(items: T[], count: number, columns: number, snap: boolean
   return items.slice(0, n);
 };
 
-/* ---- 跨尺寸卡片的内联几何（关键尺寸走内联，防 CSS 级联失效；--c 由网格派生列宽） ---- */
+/* ---- 跨尺寸卡片的内联几何（关键尺寸走内联，防 CSS 级联失效；--c 由网格派生列宽） ----
+ * 行高 = --c + --hm-row-chrome。chrome 是封面以下的固定占位：
+ *   max(封面 marginBottom 12px, 文字 marginTop 10px) + 文字块高 42px = 54px
+ * （相邻兄弟 margin 折叠，故取 12 而非 22；`.home-page .card-text` 高度固定 42px，
+ *   所以该常量与密度/圆角无关。）
+ * 此前写死 52px，比真实行高少 2px → 每跨一行就少 4px，
+ * 1×2 / 2×2 卡片的底边永远落不到网格线上（CSS 注释声称"始终落在网格线上"）。
+ */
 const IMG_FILL: CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
-const POSTER_H = 'calc(2 * (var(--c, 190px) + 52px) + var(--hm-row-gap, 16px))';
+/** 单行卡（2×1）与跨行卡（1×2 / 2×2）共用的行高基准 */
+const ROW_CHROME = 'var(--hm-row-chrome, 54px)';
+const SPAN_2 = `calc(2 * (var(--c, 190px) + ${ROW_CHROME}) + var(--hm-row-gap, 16px))`;
+const POSTER_H = SPAN_2;
 
 /** 播放入队工具 hook */
 function usePlaySongs() {
@@ -264,14 +275,14 @@ function PlaylistCard({ name, cover, trackCount, size = 's', ratio, chip, onClic
     return (
       <motion.div
         className="song-card card-wide"
-        style={{ cursor: 'pointer', gridColumn: 'span 2', height: 'calc(var(--c, 190px) + 52px)' }}
+        style={{ cursor: 'pointer', gridColumn: 'span 2', height: `calc(var(--c, 190px) + ${ROW_CHROME})` }}
         whileHover={{ y: -4 }}
         whileTap={{ scale: 0.98 }}
         onClick={onClick}
       >
         <div className="wide-cover" style={{ height: 'calc(var(--c, 190px) + 28px)', width: 'calc(var(--c, 190px) + 28px)' }}>
           {cover && (
-            <img src={cover} alt={name} className="card-image" style={IMG_FILL} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            <img src={cover} alt={name} className="card-image" style={IMG_FILL} loading="lazy" decoding="async" onError={onCoverError} />
           )}
           <div className="play-overlay">
             <IconPlay size={26} />
@@ -294,7 +305,7 @@ function PlaylistCard({ name, cover, trackCount, size = 's', ratio, chip, onClic
     return (
       <motion.div
         className="song-card span-1x2"
-        style={{ cursor: 'pointer', gridRow: 'span 2', height: 'calc(2 * (var(--c, 190px) + 52px) + var(--hm-row-gap, 16px))', ...spanStyle(size) }}
+        style={{ cursor: 'pointer', gridRow: 'span 2', height: SPAN_2, ...spanStyle(size) }}
         whileHover={{ y: -4 }}
         whileTap={{ scale: 0.98 }}
         onClick={onClick}
@@ -318,7 +329,7 @@ function PlaylistCard({ name, cover, trackCount, size = 's', ratio, chip, onClic
         <div className="tall-bottom">
           <div className="tall-thumb">
             {cover ? (
-              <img src={cover} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+              <img src={cover} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={onCoverError} />
             ) : (
               <div className="mini-cover-fallback"><IconMusic size={22} /></div>
             )}
@@ -335,14 +346,14 @@ function PlaylistCard({ name, cover, trackCount, size = 's', ratio, chip, onClic
   return (
     <motion.div
       className={`song-card${poster ? ' span-2x2' : ''}`}
-      style={{ cursor: 'pointer', height: poster ? POSTER_H : undefined, ...(poster ? {} : spanStyle(size)) }}
+      style={{ cursor: 'pointer', height: poster ? POSTER_H : undefined, ...spanStyle(size) }}
       whileHover={{ y: -4 }}
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
     >
       <div className={`card-container${poster ? ' fill' : ''}`} style={poster ? { width: '100%' } : { width: '100%', aspectRatio: coverAspect(size, ratio), borderRadius: 12, marginBottom: 12 }}>
         {cover && (
-          <img src={cover} alt={name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+          <img src={cover} alt={name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={onCoverError} />
         )}
         <div className="play-overlay" style={{ borderRadius: 12 }}>
           <IconPlay size={36} />
@@ -384,7 +395,7 @@ function MiniSongCard({ song, size = 's', ratio, chip, onClick, onArtist }: { so
       >
         <div className="wide-cover">
           {cover ? (
-            <img src={cover} alt={song.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            <img src={cover} alt={song.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={onCoverError} />
           ) : (
             <div className="mini-cover-fallback"><IconMusic size={24} /></div>
           )}
@@ -407,7 +418,7 @@ function MiniSongCard({ song, size = 's', ratio, chip, onClick, onArtist }: { so
     return (
       <motion.div
         className="song-card span-1x2"
-        style={{ cursor: 'pointer', gridRow: 'span 2', height: 'calc(2 * (var(--c, 190px) + 52px) + var(--hm-row-gap, 16px))', ...spanStyle(size) }}
+        style={{ cursor: 'pointer', gridRow: 'span 2', height: SPAN_2, ...spanStyle(size) }}
         whileHover={{ y: -4 }}
         whileTap={{ scale: 0.98 }}
         onClick={onClick}
@@ -431,7 +442,7 @@ function MiniSongCard({ song, size = 's', ratio, chip, onClick, onArtist }: { so
         <div className="tall-bottom">
           <div className="tall-thumb">
             {cover ? (
-              <img src={cover} alt={song.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+              <img src={cover} alt={song.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={onCoverError} />
             ) : (
               <div className="mini-cover-fallback"><IconMusic size={22} /></div>
             )}
@@ -450,14 +461,14 @@ function MiniSongCard({ song, size = 's', ratio, chip, onClick, onArtist }: { so
   return (
     <motion.div
       className={`song-card${poster ? ' span-2x2' : ''}`}
-      style={{ cursor: 'pointer', height: poster ? POSTER_H : undefined, ...(poster ? {} : spanStyle(size)) }}
+      style={{ cursor: 'pointer', height: poster ? POSTER_H : undefined, ...spanStyle(size) }}
       whileHover={{ y: -4 }}
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
     >
       <div className={`card-container${poster ? ' fill' : ''}`} style={poster ? { width: '100%' } : { width: '100%', aspectRatio: coverAspect(size, ratio), borderRadius: 12, marginBottom: 12 }}>
         {cover ? (
-          <img src={cover} alt={song.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+          <img src={cover} alt={song.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={onCoverError} />
         ) : (
           <div className="mini-cover-fallback"><IconMusic size={26} /></div>
         )}
@@ -707,14 +718,14 @@ export function ToplistsModule({ config, editing, onNavigate }: ModuleComponentP
           <motion.div
             key={top.id}
             className="song-card card-wide"
-            style={{ cursor: 'pointer', gridColumn: 'span 2', height: 'calc(var(--c, 190px) + 52px)' }}
+            style={{ cursor: 'pointer', gridColumn: 'span 2', height: `calc(var(--c, 190px) + ${ROW_CHROME})` }}
             whileHover={{ y: -4 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => onNavigate?.({ page: 'playlist', id: top.id, source: 'toplist' })}
           >
             <div className="wide-cover" style={{ height: 'calc(var(--c, 190px) + 28px)', width: 'calc(var(--c, 190px) + 28px)' }}>
               {coverUrl ? (
-                <img src={coverUrl} alt={top.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                <img src={coverUrl} alt={top.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={onCoverError} />
               ) : (
                 <div className="mini-cover-fallback"><IconMusic size={24} /></div>
               )}
@@ -739,7 +750,7 @@ export function ToplistsModule({ config, editing, onNavigate }: ModuleComponentP
           <motion.div
             key={top.id}
             className="song-card span-1x2"
-            style={{ cursor: 'pointer', gridRow: 'span 2', height: 'calc(2 * (var(--c, 190px) + 52px) + var(--hm-row-gap, 16px))', ...spanStyle(size) }}
+            style={{ cursor: 'pointer', gridRow: 'span 2', height: SPAN_2, ...spanStyle(size) }}
             whileHover={{ y: -4 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => onNavigate?.({ page: 'playlist', id: top.id, source: 'toplist' })}
@@ -763,7 +774,7 @@ export function ToplistsModule({ config, editing, onNavigate }: ModuleComponentP
             <div className="tall-bottom">
               <div className="tall-thumb">
                 {coverUrl ? (
-                  <img src={coverUrl} alt={top.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                  <img src={coverUrl} alt={top.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={onCoverError} />
                 ) : (
                   <div className="mini-cover-fallback"><IconMusic size={22} /></div>
                 )}
@@ -790,7 +801,7 @@ export function ToplistsModule({ config, editing, onNavigate }: ModuleComponentP
         >
           <div className={`card-container${size === 'l' ? ' fill' : ''}`} style={size === 'l' ? { width: '100%' } : { width: '100%', aspectRatio: coverAspect(size, config.props.ratio), borderRadius: 12, marginBottom: 12 }}>
             {top.cover && (
-              <img src={coverUrl} alt={top.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+              <img src={coverUrl} alt={top.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={onCoverError} />
             )}
             <div className="play-overlay" style={{ borderRadius: 12 }}>
               <IconPlay size={36} />
@@ -881,7 +892,7 @@ export function NewSongsModule({ config, editing, onNavigate }: ModuleComponentP
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 loading="lazy"
                 decoding="async"
-                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                onError={onCoverError}
               />
               <div className="play-overlay" style={{ borderRadius: 8 }}>
                 <IconPlay size={24} />
@@ -930,7 +941,7 @@ export function LovedRecommendModule({ config, editing, onNavigate }: ModuleComp
           style={sizeOf(rec.id) === 'l' ? undefined : { width: '100%', aspectRatio: coverAspect(sizeOf(rec.id), config.props.ratio), borderRadius: 12, marginBottom: 12 }}
         >
           {rec.cover && (
-            <img src={api.getProxyImageUrl(rec.cover)} alt={rec.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            <img src={api.getProxyImageUrl(rec.cover)} alt={rec.name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={onCoverError} />
           )}
           <div className="play-overlay" style={{ borderRadius: 12 }}>
             <IconPlay size={36} />
@@ -1356,7 +1367,7 @@ function LibraryCard({ name, cover, songCount, size = 's', ratio, chip, onClick,
       >
         <div className="wide-cover">
           {cover ? (
-            <img src={cover} alt={name} className="card-image" loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            <img src={cover} alt={name} className="card-image" loading="lazy" decoding="async" onError={onCoverError} />
           ) : (
             <div className="mini-cover-fallback"><IconMusic size={24} /></div>
           )}
@@ -1377,7 +1388,7 @@ function LibraryCard({ name, cover, songCount, size = 's', ratio, chip, onClick,
     return (
       <motion.div
         className="song-card lib-card span-1x2"
-        style={{ cursor: 'pointer', gridRow: 'span 2', height: 'calc(2 * (var(--c, 190px) + 52px) + var(--hm-row-gap, 16px))', ...spanStyle(size) }}
+        style={{ cursor: 'pointer', gridRow: 'span 2', height: SPAN_2, ...spanStyle(size) }}
         whileHover={{ y: -4 }}
         whileTap={{ scale: 0.98 }}
         onClick={onClick}
@@ -1401,7 +1412,7 @@ function LibraryCard({ name, cover, songCount, size = 's', ratio, chip, onClick,
         <div className="tall-bottom">
           <div className="tall-thumb">
             {cover ? (
-              <img src={cover} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+              <img src={cover} alt={name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} loading="lazy" decoding="async" onError={onCoverError} />
             ) : (
               <div className="mini-cover-fallback"><IconMusic size={22} /></div>
             )}
@@ -1418,14 +1429,14 @@ function LibraryCard({ name, cover, songCount, size = 's', ratio, chip, onClick,
   return (
     <motion.div
       className={`song-card lib-card${poster ? ' span-2x2' : ''}`}
-      style={{ cursor: 'pointer', height: poster ? POSTER_H : undefined, ...(poster ? {} : spanStyle(size)) }}
+      style={{ cursor: 'pointer', height: poster ? POSTER_H : undefined, ...spanStyle(size) }}
       whileHover={{ y: -4 }}
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
     >
       <div className={`card-container${poster ? ' fill' : ''}`} style={poster ? { width: '100%' } : { width: '100%', aspectRatio: coverAspect(size, ratio), borderRadius: 12, marginBottom: 12 }}>
         {cover ? (
-          <img src={cover} alt={name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+          <img src={cover} alt={name} className="card-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={onCoverError} />
         ) : (
           <div className="mini-cover-fallback"><IconMusic size={26} /></div>
         )}
@@ -1619,7 +1630,7 @@ export function ToplistCardsModule({ config, editing, onNavigate }: ModuleCompon
             <div className="tcard-cover">
               {top.cover ? (
                 <img src={api.getProxyImageUrl(top.cover)} alt={top.name} loading="lazy" decoding="async"
-                  onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                  onError={onCoverError} />
               ) : (
                 <div className="tcard-cover-fallback"><IconMusic size={26} /></div>
               )}

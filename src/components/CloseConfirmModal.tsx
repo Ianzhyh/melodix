@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { useConfigStore } from '../stores/configStore';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
+import { Modal, ModalButton } from './common/Modal';
 
 interface CloseConfirmModalProps {
   isOpen: boolean;
@@ -27,141 +27,47 @@ export function CloseConfirmModal({ isOpen, onClose }: CloseConfirmModalProps) {
   };
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="关闭确认"
-          style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 'var(--z-confirm)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            onClick={onClose}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: 'rgba(0, 0, 0, 0.4)',
-              backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
-            }}
-          />
-
-          {/* Modal content */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 10 }}
-            transition={{ duration: 0.2, type: 'spring', damping: 25, stiffness: 300 }}
-            style={{
-              position: 'relative',
-              width: 400,
-              maxWidth: '90%',
-              background: 'var(--color-bg-elevated, rgba(30,30,30,0.85))',
-              backdropFilter: 'blur(20px)',
-              border: '1px solid var(--glass-border, rgba(255,255,255,0.1))',
-              borderRadius: 16,
-              padding: 24,
-              boxShadow: '0 24px 48px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05) inset',
-              color: 'var(--color-text)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 20,
-            }}
-          >
-            <div>
-              <h2 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 600 }}>关闭提示</h2>
-              <p style={{ margin: 0, fontSize: 14, color: 'var(--color-text-dim)', lineHeight: 1.5 }}>
-                您想要最小化到系统托盘，还是直接退出应用？
-              </p>
-            </div>
-
-            <label style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: 13,
-              color: 'var(--color-text-dim)',
-              cursor: 'pointer',
-              userSelect: 'none',
-            }}>
-              <input
-                type="checkbox"
-                checked={remember}
-                onChange={(e) => setRemember(e.target.checked)}
-                style={{ cursor: 'pointer', accentColor: 'var(--color-primary)' }}
-              />
-              记住我的选择，不再询问
-            </label>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 8 }}>
-              <button
-                onClick={onClose}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: 8,
-                  border: '1px solid var(--color-border)',
-                  background: 'transparent',
-                  color: 'var(--color-text)',
-                  fontSize: 13,
-                  cursor: 'pointer',
-                  transition: 'background 0.2s',
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-surface-hover)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-              >
-                取消
-              </button>
-              <button
-                onClick={() => handleAction('minimize')}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: 8,
-                  border: '1px solid var(--color-primary)',
-                  background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)',
-                  color: 'var(--color-primary)',
-                  fontSize: 13,
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  transition: 'background 0.2s',
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'color-mix(in srgb, var(--color-primary) 25%, transparent)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'color-mix(in srgb, var(--color-primary) 15%, transparent)'}
-              >
-                最小化到托盘
-              </button>
-              <button
-                onClick={() => handleAction('exit')}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: 8,
-                  border: 'none',
-                  background: 'var(--color-danger, #ef4444)',
-                  color: '#fff',
-                  fontSize: 13,
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  transition: 'opacity 0.2s',
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
-                onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
-              >
-                直接退出
-              </button>
-            </div>
-          </motion.div>
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      title="关闭提示"
+      // 注意：这里必须是纯色遮罩。原实现给遮罩加了 backdropFilter: 'blur(8px)'，
+      // 而这是本项目其它四处弹窗都已经改掉的写法 —— 全屏模糊在透明度动画期间
+      // 每帧对整屏重采样，是弹窗首帧卡顿的主因。改走 Modal 后自动得到纯色遮罩。
+      aria-label="关闭确认"
+      footer={
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 8 }}>
+          <ModalButton onClick={onClose}>取消</ModalButton>
+          <ModalButton variant="primary" onClick={() => handleAction('minimize')}>
+            最小化到托盘
+          </ModalButton>
+          <ModalButton variant="danger" onClick={() => handleAction('exit')}>
+            直接退出
+          </ModalButton>
         </div>
-      )}
-    </AnimatePresence>
+      }
+    >
+      <p style={{ margin: 0, fontSize: 14, color: 'var(--color-text-dim)', lineHeight: 1.5 }}>
+        您想要最小化到系统托盘，还是直接退出应用？
+      </p>
+
+      <label style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        fontSize: 13,
+        color: 'var(--color-text-dim)',
+        cursor: 'pointer',
+        userSelect: 'none',
+      }}>
+        <input
+          type="checkbox"
+          checked={remember}
+          onChange={(e) => setRemember(e.target.checked)}
+          style={{ cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+        />
+        记住我的选择，不再询问
+      </label>
+    </Modal>
   );
 }

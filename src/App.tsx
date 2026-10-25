@@ -281,14 +281,15 @@ export default function App() {
         }}>
           {!error ? (
             <>
-              <style>{`@keyframes melodix-spin { to { transform: rotate(360deg); } }`}</style>
+              {/* 复用 global.css 里已有的 @keyframes spin（原来在组件内又定义了一份
+                  完全相同的 melodix-spin，属于同一套标准写两遍） */}
               <div style={{
                 width: 40,
                 height: 40,
                 border: '3px solid var(--color-surface-active)',
                 borderTopColor: 'var(--color-primary)',
                 borderRadius: '50%',
-                animation: 'melodix-spin 0.8s linear infinite',
+                animation: 'spin 0.8s linear infinite',
               }} />
               <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 2 }}>Melodix</div>
               <div style={{ fontSize: 14, color: 'var(--color-text-faint)' }}>正在启动服务...</div>

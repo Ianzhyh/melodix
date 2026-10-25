@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useFavoriteStore } from '../stores/favoriteStore';
 import { usePlaybackStore } from '../stores/playbackStore';
@@ -8,24 +8,11 @@ import { SelectionBar } from './SelectionBar';
 import { TrackList, TrackListHeader } from './common/TrackList';
 import { TrackRow } from './common/TrackRow';
 import { useSongEnrichment } from '../hooks/useSongEnrichment';
+import { Pagination, usePagination, DEFAULT_PAGE_SIZE } from './common/Pagination';
+import { EmptyState } from './common/ListStates';
 import type { RouteState, Song } from '../types/playback';
 
-const PAGE_SIZE = 50;
-
-
-
-function pagerBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    background: 'none',
-    border: '1px solid var(--color-border, rgba(255,255,255,0.1))',
-    color: disabled ? 'var(--color-text-faint, rgba(255,255,255,0.3))' : 'var(--color-text, rgba(255,255,255,0.9))',
-    padding: '6px 14px',
-    borderRadius: 6,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontSize: 13,
-    transition: 'background 0.15s',
-  };
-}
+const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) => void }) {
   // 只订阅轻量 ID 列表，数量变化时触发重渲染
@@ -37,6 +24,7 @@ export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) 
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const current = usePlaybackStore((s) => s.current);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const isBuffering = usePlaybackStore((s) => s.isBuffering);
   const addTasks = useDownloadStore((s) => s.addTasks);
   const [page, setPage] = useState(1);
   // 多选模式：选中集合按当前页可见歌曲计（翻页重置）
@@ -44,9 +32,8 @@ export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const total = favoriteIds.length;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = Math.min(Math.max(1, page), totalPages);
-  const pageStartIndex = (currentPage - 1) * PAGE_SIZE;
+  // 总页数 / 页码钳制 / 起始下标统一由 usePagination 计算（消除各页面重复的边界算术）
+  const { currentPage, totalPages, pageStartIndex } = usePagination(total, page, PAGE_SIZE);
 
   // 页码越界时回正（例如取消收藏后总页数减少）
   useEffect(() => {
@@ -129,11 +116,6 @@ export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) 
 
   return (
     <div style={{ padding: 'clamp(20px, 3vw, 40px)', maxWidth: 1200, margin: '0 auto' }}>
-      <style>{`
-        .fv-pager-btn:hover:not(:disabled) {
-          background: var(--color-hover, rgba(255,255,255,0.06)) !important;
-        }
-      `}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 32 }}>
         <div style={{
           width: 56,
@@ -206,10 +188,7 @@ export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) 
         )}
       </AnimatePresence>
       {total === 0 ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--color-text-faint, rgba(255,255,255,0.45))' }}>
-          <p style={{ fontSize: 16 }}>还没有收藏的歌曲</p>
-          <p style={{ fontSize: 13, marginTop: 8 }}>你喜欢的歌曲会显示在这里</p>
-        </div>
+        <EmptyState title="还没有收藏的歌曲" hint="你喜欢的歌曲会显示在这里" />
       ) : (
         <>
         <TrackList showCover={true} actionWidth="120px">
@@ -237,6 +216,7 @@ export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) 
                     displayIndex={globalIndex + 1}
                     isCurrent={current?.id === song.id}
                     isPlaying={isPlaying}
+                    isBuffering={isBuffering}
                     selectMode={selectMode}
                     selected={selectedIds.has(song.id)}
                     onToggleSelect={toggleSelect}
@@ -251,27 +231,7 @@ export function FavoritesPage({ onNavigate }: { onNavigate: (route: RouteState) 
             })}
           </motion.div>
         </TrackList>
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '24px 0 8px' }}>
-            <button
-              className="fv-pager-btn"
-              disabled={currentPage <= 1}
-              onClick={() => setPage(currentPage - 1)}
-              style={pagerBtnStyle(currentPage <= 1)}
-            >
-              上一页
-            </button>
-            <span style={{ fontSize: 13, color: 'var(--color-text-dim, rgba(255,255,255,0.65))', minWidth: 90, textAlign: 'center' }}>
-              第 {currentPage} / {totalPages} 页
-            </span>
-            <button
-              className="fv-pager-btn"
-              disabled={currentPage >= totalPages}
-              onClick={() => setPage(currentPage + 1)}
-              style={pagerBtnStyle(currentPage >= totalPages)}
-            >
-              下一页
-            </button>
-          </div>
+          <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setPage} />
         </>
       )}
     </div>

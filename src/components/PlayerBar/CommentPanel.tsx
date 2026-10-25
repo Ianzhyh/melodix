@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useConfigStore } from '../../stores/configStore';
+import { formatRelativeTime } from '../../utils/format';
 
 export interface Comment {
   avatar?: string;
@@ -12,22 +13,13 @@ export interface Comment {
   likedcount?: number;
 }
 
-function formatRelativeTime(timestamp: number): string {
-  const now = Date.now();
-  const diff = now - timestamp;
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return '刚刚';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} 天前`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months} 个月前`;
-  const years = Math.floor(months / 12);
-  return `${years} 年前`;
-}
+/**
+ * 相对时间：统一走 utils/format。
+ *
+ * 原来这里与 HistoryPage 各写了一份，且**文案不一致**：同一个时间戳
+ * 在「最近播放」显示 `2026/6/1`，在「评论」显示 `4 个月前`。
+ * 现在两边共用同一实现（超过 30 天统一用绝对日期）。
+ */
 
 interface CommentPanelProps {
   show: boolean;

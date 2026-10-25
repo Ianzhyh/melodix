@@ -11,6 +11,8 @@ import { useHomeLayoutStore } from '../stores/homeLayoutStore';
 import type { PlatformCookies } from '../stores/configStore';
 import { open, ask, message as showDialog } from '@tauri-apps/plugin-dialog';
 import { EqualizerSettings } from './EqualizerSettings';
+import { Modal, ModalButton } from './common/Modal';
+import { useDismiss } from '../hooks/useDismiss';
 
 // GitHub 仓库地址（上传后替换为真实地址，关于页跳转链接会用到）
 const GITHUB_REPO_URL = 'https://github.com/Ianzhyh/melodix';
@@ -41,23 +43,11 @@ function CustomSelect({ value, options, onChange }: { value: string, options: { 
   const [isOpen, setIsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const enableTransparency = useConfigStore(s => s.enableTransparency);
-  
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
-  // 全局 Escape 广播（App.tsx 派发 melodix-close-popups）：关闭下拉选项
-  useEffect(() => {
-    const closePopup = () => setIsOpen(false);
-    window.addEventListener('melodix-close-popups', closePopup);
-    return () => window.removeEventListener('melodix-close-popups', closePopup);
-  }, []);
+  // 点击外部 + Escape 关闭：统一走 useDismiss。
+  // 原来这里手写的实现漏了 `if (!isOpen) return` —— 下拉框关着的时候也在文档上
+  // 常驻一个 mousedown 监听，每次打开/关闭下拉都要多一次无意义的关闭调用。
+  useDismiss(isOpen, ref, () => setIsOpen(false));
 
   const selectedOption = options.find(o => o.value === value) || options[0];
 
@@ -970,58 +960,44 @@ export function SettingsPage({ onNavigate }: SettingsPageProps) {
       </div>
 
       {pathModalOpen && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 'var(--z-modal)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)'
-        }} onClick={() => setPathModalOpen(false)}>
-          <div style={{
-            background: 'var(--glass-bg)',
-            backdropFilter: 'var(--glass-blur) var(--glass-saturate)',
-            WebkitBackdropFilter: 'var(--glass-blur) var(--glass-saturate)',
-            border: '1px solid var(--glass-border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '24px',
-            minWidth: '400px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-          }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: 'var(--color-text)' }}>
-              设置下载路径
-            </div>
-            <input
-              autoFocus
-              value={tempPath}
-              onChange={e => setTempPath(e.target.value)}
-              style={{
-                width: '100%', padding: '10px 14px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--color-border)',
-                background: 'var(--color-hover)',
-                color: 'var(--color-text)',
-                fontSize: 14,
-                outline: 'none',
-              }}
-            />
+        <Modal
+          open
+          onClose={() => setPathModalOpen(false)}
+          title="设置下载路径"
+          layer="modal"
+          width={400}
+          footer={
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 20 }}>
-              <button onClick={() => setPathModalOpen(false)}
-                style={{
-                  padding: '8px 20px', borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--color-border)',
-                  background: 'transparent', color: 'var(--color-text-dim)',
-                  fontSize: 14, cursor: 'pointer',
-                }}>取消</button>
-              <button onClick={() => {
-                setDownloadPath(tempPath);
-                setPathModalOpen(false);
-              }}
-                style={{
-                  padding: '8px 20px', borderRadius: 'var(--radius-sm)',
-                  border: 'none', background: 'var(--color-primary)',
-                  color: '#fff', fontSize: 14, cursor: 'pointer',
-                }}>确认</button>
+              <ModalButton onClick={() => setPathModalOpen(false)}>取消</ModalButton>
+              <ModalButton
+                variant="primary"
+                onClick={() => {
+                  setDownloadPath(tempPath);
+                  setPathModalOpen(false);
+                }}
+              >
+                确认
+              </ModalButton>
             </div>
-          </div>
-        </div>
+          }
+        >
+          <input
+            autoFocus
+            value={tempPath}
+            onChange={e => setTempPath(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-hover)',
+              color: 'var(--color-text)',
+              fontSize: 14,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+        </Modal>
       )}
     </div>
   );
